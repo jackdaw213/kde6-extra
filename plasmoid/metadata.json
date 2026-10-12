@@ -1,0 +1,22 @@
+{
+    "KPlugin": {
+        "Authors": [
+            {
+                "Email": "dev@localhost",
+                "Name": "PomodoroKDE contributors"
+            }
+        ],
+        "BugReportUrl": "",
+        "Category": "Utilities",
+        "Description": "Enforced Pomodoro work/rest cycles with a fullscreen break overlay, media pause and wall-clock-deadline timers.",
+        "Description[ca]": "Cicles de treball/descans Pomodoro amb una superposició de pantalla completa, pausa de mitjans i temporitzadors basats en hora del rellotge.",
+        "Icon": "chronometer",
+        "Id": "org.kde.plasma.pomodoro",
+        "License": "GPL-2.0-or-later",
+        "Name": "Pomodoro",
+        "Version": "1.0",
+        "Website": ""
+    },
+    "KPackageStructure": "Plasma/Applet",
+    "X-Plasma-API-Minimum-Version": "6.0"
+}

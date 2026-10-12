@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<kcfg xmlns="http://www.kde.org/standards/kcfg/1.0"
+      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xsi:schemaLocation="http://www.kde.org/standards/kcfg/1.0 http://www.kde.org/standards/kcfg/1.0/kcfg.xsd">
+  <kcfgfile name=""/>
+
+  <group name="General">
+    <!-- Preset list as JSON: [{label, workMin, breakMin, largeBreakMin?}]; first entry is the default.
+         Seeded 50/10, 25/5, 45/15. Capped at 5 entries by the editor. -->
+    <entry name="presets" type="String">
+      <default>[{"label":"50/10","workMin":50,"breakMin":10},{"label":"25/5","workMin":25,"breakMin":5},{"label":"45/15","workMin":45,"breakMin":15}]</default>
+    </entry>
+
+    <!-- Cycle length: every Nth Work Block's Break is a Large Break. Default 4. -->
+    <entry name="cycleLength" type="Int">
+      <default>4</default>
+    </entry>
+
+    <!-- Machine state snapshot (phase, deadline, preset, completedBlocks, cycleLength,
+         pendingBreak, largeBreak) written on every state change; wall-clock restore on load. -->
+    <entry name="stateSnapshot" type="String">
+      <default></default>
+    </entry>
+  </group>
+</kcfg>

@@ -1,0 +1,16 @@
+# Glossary
+
+- **Work Block** — a continuous stretch of focused work of configurable length. Starts when the user picks a preset (or presses Continue). Ends by expiring, after which a Break begins immediately.
+- **Break** — the enforced rest period that begins the instant a Work Block expires. Shown as a fullscreen overlay. Itself of configurable length. The user may take *longer* than the Break length (the overlay simply waits); they may not take less without Skipping.
+- **Preset** — a named Work/Break minute pair, with an *optional* Large-Break length. Built-in Presets: 50/10 (the default), 25/5, 45/15. Users may edit presets and add their own, capped at **5 presets total**. Any arbitrary (work, break) pair can also be set as **Custom** one-off values.
+- **Large Break** — the extended Break that arrives on schedule: after the Cycle allows three normal Breaks, the fourth Work Block's Break is large. Its length is either the Preset's explicit Large-Break value, or — if unset — derived from the automatic rule: normal Break ≤6 min → 20 min; 7–12 min → 30 min; ≥13 min → 40 min.
+- **Cycle** — the recurring count of Work Blocks. Every Work Block advances it, whether its Break ran fully or was Skipped. Default Cycle length 4 (three normal Breaks, then one Large Break); configurable.
+- **Continue button** — the button on the Break overlay that ends the Break and starts a fresh Work Block. It is **disabled and grayed out for the entire Break duration**; it enables exactly when the Break timer finishes. From then on the overlay waits indefinitely.
+- **Skip (break)** — an explicit, separate control, always available during a Break, that ends the Break immediately and starts a fresh Work Block. Protected by a confirmation click so it cannot be triggered accidentally. Distinct from the disabled Continue button. Does not alter the Cycle.
+- **Delay Break** — a button shown when a Work Block expires (with the overlay up) that postpones the Break by 5 minutes and resumes work immediately. Repeatable — each click adds 5 more minutes.
+- **Start Break Now** — a popup action available while a Work Block is running (e.g. during a Delay Break) that ends the work immediately and starts the due Break.
+- **Disabled for now (Meeting mode)** — a manual state toggled from the panel popup. While disabled, all timing and overlay behavior is suspended. Re-enabling starts a fresh default Work Block (50/10).
+- **Panel widget** — a Plasma 6 panel icon showing timer state (idle / remaining time while running). Left-click opens a popup: Presets (click to start immediately), Custom…, and Disable for now.
+- **Overlay** — the fullscreen overlay surface shown during a Break, rendered at the Wayland layer-shell Overlay layer so it sits above all windows including fullscreen apps (ADR-0001 as amended by ADR-0002). Displays rest-time messaging and the remaining Break time, the Continue button, and Skip.
+- **Media Pause** — at the instant a Break starts, all playing MPRIS media (music, videos) is paused. Playback is never resumed automatically.
+- **Wall-clock deadline** — the persisted absolute end-time of the current phase. All timers derive their remaining time from it, so logout, reboot, or plasmashell restart never loses or stretches a running phase.
