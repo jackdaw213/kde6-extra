@@ -17,7 +17,9 @@ TestCase {
 
     function makeCompact() {
         let comp = Qt.createComponent("../plasmoid/contents/ui/CompactRepresentation.qml");
-        let obj = comp.createObject(null, { ctrl: mockCtrl });
+        // Simulate a 44px-thick panel: the panel sets the applet's height via
+        // Layout.fillHeight; we pin it explicitly here.
+        let obj = comp.createObject(null, { ctrl: mockCtrl, height: 44 });
         verify(obj !== null, "create failed: " + (obj === null && comp ? comp.errorString() : "?"));
         return obj;
     }
@@ -26,12 +28,10 @@ TestCase {
         mockCtrl.running = false;
         let c = makeCompact();
         verify(c, "compact creation failed");
-        compare(c.implicitWidth, Kirigami.Units.iconSizes.small);
-        // Panel sizing: the panel only honors the Layout attached properties on
-        // the compact root (develop.kde.org → widget setup); plain implicitWidth
-        // is ignored there.
-        compare(c.Layout.minimumWidth, Kirigami.Units.iconSizes.small);
-        compare(c.Layout.preferredWidth, Kirigami.Units.iconSizes.small);
+        // Idle: square cell at the panel thickness — the icon renders at the
+        // same size as before the flex patch (height-bound, not iconSizes.small).
+        compare(c.Layout.minimumWidth, c.height);
+        compare(c.Layout.preferredWidth, c.height);
         c.destroy();
     }
 
@@ -49,10 +49,10 @@ TestCase {
         mockCtrl.remainingText = "1:04:59"; // unlikely mm:ss, but stresses tracking
         let w2 = c.implicitWidth;
         verify(w2 >= w1, "implicitWidth must not shrink when text widens: " + w2 + " < " + w1);
-        // Back to idle -> back to icon size.
+        // Back to idle -> back to the square icon cell.
         mockCtrl.running = false;
-        compare(c.implicitWidth, Kirigami.Units.iconSizes.small);
-        compare(c.Layout.minimumWidth, Kirigami.Units.iconSizes.small);
+        compare(c.Layout.minimumWidth, c.height);
+        compare(c.Layout.preferredWidth, c.height);
         c.destroy();
     }
 }

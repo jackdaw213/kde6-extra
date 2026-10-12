@@ -13,10 +13,12 @@ Item {
     // Panel sizing: the panel lays applets out using the Layout attached
     // properties on the compact representation root (develop.kde.org → widget
     // setup); a plain implicitWidth is ignored there and the timer text
-    // overflows onto neighboring icons. Bind both to implicitWidth so the cell
-    // flexes with the text.
-    Layout.minimumWidth: compact.implicitWidth
-    Layout.preferredWidth: compact.implicitWidth
+    // overflows onto neighboring icons. While running the cell flexes with the
+    // text; when idle it stays a square at the panel thickness so the
+    // chronometer icon renders at the pre-flex (full icon) size.
+    readonly property real cellWidth: compact.running ? compact.implicitWidth : compact.height
+    Layout.minimumWidth: compact.cellWidth
+    Layout.preferredWidth: compact.cellWidth
     Layout.fillHeight: true
 
     implicitWidth: compact.running ? Math.ceil(timeLabel.implicitWidth) + Kirigami.Units.smallSpacing * 2
