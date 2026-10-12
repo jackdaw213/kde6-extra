@@ -78,7 +78,8 @@ Item {
         // -------------------------------------------------------- preset list
 
         Repeater {
-            // Presets are a from-idle action; hidden while a block runs so the
+            // Presets start a fresh block from any non-timing state (idle,
+            // finished-break wait, meeting mode); hidden while timing so the
             // machine's guard and the UI stay coherent.
             model: full.working ? 0 : full.presets.length
 

@@ -64,9 +64,12 @@ function decorate(st) {
 function handle(state, intent, now) {
     switch (intent.type) {
     case "startPreset":
-        if (state.phase !== "idle")
-            return state; // presets are a from-idle action (break: Continue/Skip; disabled: Enable)
-        return enterWork(state, intent.preset, now, []);
+        // Presets start a fresh Work Block: allowed from any non-timing state
+        // (idle, finished-break wait, meeting mode). Refused only while timing.
+        if (state.phase === "work" || state.phase === "break")
+            return state;
+        return enterWork(state, intent.preset, now,
+                         state.phase === "wait" ? [{ type: "hideOverlay" }] : []);
     case "tick":
         return tick(state, now);
     case "continue":

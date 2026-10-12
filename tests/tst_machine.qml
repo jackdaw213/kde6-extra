@@ -207,18 +207,38 @@ TestCase {
 
     // --- Slice 9: startPreset is a from-idle action ---
 
-    function test_startPreset_refusedOutsideIdle() {
+    function test_startPreset_refusedWhileTiming() {
         var brk = startBreak();
         var st = Machine.handle(brk, { type: "startPreset", preset: defaultPreset() }, t0 + 52 * min);
         compare(st.phase, "break");          // use Continue/Skip during a break, not presets
 
-        var wait = Machine.handle(startBreak(), { type: "tick" }, t0 + 61 * min);
-        st = Machine.handle(wait, { type: "startPreset", preset: defaultPreset() }, t0 + 75 * min);
-        compare(st.phase, "wait");
+        var work = start50x10();
+        st = Machine.handle(work, { type: "startPreset", preset: defaultPreset() }, t0 + 10 * min);
+        compare(st.phase, "work");           // presets must not restart a running block
+        compare(st.deadline, t0 + 50 * min); // state unchanged
+    }
 
+    function test_startPreset_fromWait_startsChosenPreset_andHidesOverlay() {
+        // Break finished; overlay waits indefinitely. Picking a different preset
+        // must start that block (not silently do nothing / force default 50/10).
+        var wait = Machine.handle(startBreak(), { type: "tick" }, t0 + 61 * min);
+        var st = Machine.handle(wait, { type: "startPreset",
+            preset: { label: "25/5", workMin: 25, breakMin: 5 } }, t0 + 75 * min);
+        compare(st.phase, "work");
+        compare(st.preset.label, "25/5");
+        compare(st.deadline, t0 + 75 * min + 25 * min);
+        var hid = st.effects.some(function (e) { return e.type === "hideOverlay"; });
+        compare(hid, true); // the waiting overlay must go away
+    }
+
+    function test_startPreset_fromDisabled_startsChosenPreset() {
+        // Meeting mode: every preset button must work, not only Enable's default.
         var dis = Machine.handle(start50x10(), { type: "disable" }, t0 + 10 * min);
-        st = Machine.handle(dis, { type: "startPreset", preset: defaultPreset() }, t0 + 12 * min);
-        compare(st.phase, "disabled");       // re-enabling is the fresh-50/10 path (story 24)
+        var st = Machine.handle(dis, { type: "startPreset",
+            preset: { label: "45/15", workMin: 45, breakMin: 15 } }, t0 + 12 * min);
+        compare(st.phase, "work");
+        compare(st.preset.label, "45/15");
+        compare(st.deadline, t0 + 12 * min + 45 * min);
     }
 
     function test_customValues_governBlockLikePreset() {
