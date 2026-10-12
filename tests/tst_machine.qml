@@ -263,4 +263,106 @@ TestCase {
         compare(st.continueEnabled, true);
         compare(st.completedBlocks, 1);
     }
+
+    // --- Slice 9: hostile minute values must degrade safely, never hang ---
+    // NOTE: keep the loops inline in every test below. This qmllint 6.12 build
+    // crashes (silent exit 255) when certain test functions call locally-defined
+    // helpers, so the Slice 9 tests deliberately contain no helper calls.
+
+    function test_nanWorkMin_doesNotHangTheTimer() {
+        // workMin: NaN used to yield deadline NaN — the timer hung in "work" forever.
+        var st = Machine.handle(freshState(), { type: "startPreset",
+            preset: { label: "g", workMin: NaN, breakMin: 10 } }, t0);
+        st = Machine.handle(st, { type: "tick" }, t0 + 365 * 24 * 60 * min);
+        verify(st.phase !== "work", "timer must not hang; got " + st.phase);
+        verify(isFinite(st.deadline));
+    }
+
+    function test_nonpositiveWorkMin_fallsBackToDefault() {
+        var st = Machine.handle(freshState(), { type: "startPreset",
+            preset: { label: "g", workMin: 0, breakMin: 10 } }, t0);
+        compare(st.deadline, t0 + 50 * min);
+        st = Machine.handle(freshState(), { type: "startPreset",
+            preset: { label: "g", workMin: -20, breakMin: 10 } }, t0);
+        compare(st.deadline, t0 + 50 * min);
+    }
+
+    function test_negativeBreakMin_isStillEnforced() {
+        // breakMin: -5 used to skip the rest entirely (instant wait).
+        var st = Machine.handle(freshState(), { type: "startPreset",
+            preset: { label: "g", workMin: 50, breakMin: -5 } }, t0);
+        st = Machine.handle(st, { type: "tick" }, t0 + 50 * min);
+        compare(st.phase, "break");
+        compare(st.deadline, t0 + 60 * min); // default 10-minute break enforced
+        compare(Machine.handle(st, { type: "tick" }, t0 + 55 * min).phase, "break");
+    }
+
+    function test_zeroOrNegativeLargeBreakMin_meansDerived() {
+        // Editor contract: large break of 0 means derived automatically.
+        // 0/-3/NaN used to win outright, producing an instant-over large break.
+        // NOTE: no for/while loops with array subscripts here — this qmllint
+        // 6.12 build crashes (silent exit 255) on subscript access inside any
+        // for/while loop. forEach is the safe iteration idiom in this file.
+        // Drives 3 full work→break→continue cycles inline, then lets the 4th
+        // Work Block expire.
+        [0, -3, NaN].forEach(function (jv) {
+            var st = Machine.handle(freshState(), { type: "startPreset",
+                preset: { label: "g", workMin: 50, breakMin: 10, largeBreakMin: jv } }, t0);
+            var when = t0;
+            for (let i = 0; i < 3; i++) {
+                st = Machine.handle(st, { type: "tick" }, when + 50 * min); // work expires → break
+                st = Machine.handle(st, { type: "tick" }, when + 61 * min); // break over → wait
+                st = Machine.handle(st, { type: "continue" }, when + 61 * min); // fresh work
+                when = when + 61 * min;
+            }
+            st = Machine.handle(st, { type: "tick" }, when + 50 * min); // 4th expires
+            compare(st.phase, "break", "junk=" + jv);
+            compare(st.largeBreak, true, "junk=" + jv);
+            compare(st.deadline, when + 50 * min + 30 * min, // derived: break 10 → 30
+                    "junk=" + jv);
+        });
+    }
+
+    function test_validLargeBreakMin_stillWins() {
+        var st = Machine.handle(freshState(), { type: "startPreset",
+            preset: { label: "g", workMin: 50, breakMin: 10, largeBreakMin: 25 } }, t0);
+        var when = t0;
+        for (let i = 0; i < 3; i++) {
+            st = Machine.handle(st, { type: "tick" }, when + 50 * min);
+            st = Machine.handle(st, { type: "tick" }, when + 61 * min);
+            st = Machine.handle(st, { type: "continue" }, when + 61 * min);
+            when = when + 61 * min;
+        }
+        st = Machine.handle(st, { type: "tick" }, when + 50 * min);
+        compare(st.deadline, when + 50 * min + 25 * min);
+    }
+
+    function test_rawSnapshotPreset_garbageBreaksDegradeSafely() {
+        // Restore path: hand-edited config reaches enterBreak unfiltered, so the
+        // machine itself must sanitize (build the state raw, as restore() does).
+        var raw = Machine.decorate({
+            phase: "work", deadline: t0 + 50 * min,
+            preset: { label: "g", workMin: NaN, breakMin: -5, largeBreakMin: 0 },
+            completedBlocks: 3, cycleLength: 4,
+            pendingBreak: false, continueEnabled: false, largeBreak: false, effects: []
+        });
+        var st = Machine.tick(raw, t0 + 50 * min);
+        compare(st.phase, "break");
+        compare(st.deadline, t0 + 50 * min + 30 * min); // fallback break 10, derived large 30
+    }
+
+    function test_zeroOrJunkCycleLength_fallsBackToDefault() {
+        var mk = function (cycleLength) {
+            return Machine.decorate({
+                phase: "work", deadline: t0 + 50 * min,
+                preset: { label: "g", workMin: 50, breakMin: 10 },
+                completedBlocks: 3, cycleLength: cycleLength,
+                pendingBreak: false, continueEnabled: false, largeBreak: false, effects: []
+            });
+        };
+        var st0 = Machine.tick(mk(0), t0 + 50 * min);
+        compare(st0.largeBreak, true, "cycleLength 0 must fall back to 4 (4th block large)");
+        var st1 = Machine.tick(mk(NaN), t0 + 50 * min);
+        compare(st1.largeBreak, true, "cycleLength NaN must fall back to 4");
+    }
 }

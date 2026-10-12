@@ -14,6 +14,34 @@ function largeBreakMinutes(breakMin) {
 
 var CYCLE_LENGTH_DEFAULT = 4; // three normal breaks, then a large one
 
+// Hostile-value guards: config JSON is user-editable and presets arrive from
+// both the editor and (raw) from restored snapshots. A garbage minute value
+// must degrade to a safe fallback, never to a hung timer or a skipped rest.
+function saneMinutes(v, fallback) {
+    var n = Math.round(Number(v));
+    return (isFinite(n) && n > 0) ? n : fallback;
+}
+
+// Returns a preset whose minute fields are guaranteed sane. largeBreakMin is
+// kept only when strictly positive (0/negative/NaN = "derive automatically",
+// matching the editor contract).
+function normalizePreset(p) {
+    var out = {
+        label: p && p.label ? String(p.label) : DEFAULT_PRESET.label,
+        workMin: saneMinutes(p && p.workMin, DEFAULT_PRESET.workMin),
+        breakMin: saneMinutes(p && p.breakMin, DEFAULT_PRESET.breakMin)
+    };
+    var large = saneMinutes(p && p.largeBreakMin, 0);
+    if (large > 0)
+        out.largeBreakMin = large;
+    return out;
+}
+
+function saneCycleLength(v) {
+    var n = Math.round(Number(v));
+    return (isFinite(n) && n >= 1) ? n : CYCLE_LENGTH_DEFAULT;
+}
+
 function initialState() {
     return decorate({
         phase: "idle",
@@ -139,13 +167,15 @@ function delayWork(state, now, extensionMs) {
 }
 
 function enterBreak(state, atInstant) {
+    // Normalize defensively: presets can arrive raw from restored snapshots.
+    var src = normalizePreset(state.preset);
     var breakNo = state.completedBlocks + 1;
-    var isLarge = breakNo % state.cycleLength === 0;
+    var isLarge = breakNo % saneCycleLength(state.cycleLength) === 0;
     var breakMin = isLarge
-        ? (state.preset.largeBreakMin !== undefined && state.preset.largeBreakMin !== null
-            ? state.preset.largeBreakMin
-            : largeBreakMinutes(state.preset.breakMin))
-        : state.preset.breakMin;
+        ? (src.largeBreakMin !== undefined && src.largeBreakMin !== null
+            ? src.largeBreakMin
+            : largeBreakMinutes(src.breakMin))
+        : src.breakMin;
     var effects = [
         { type: "showOverlay" },
         { type: "pauseMedia" },
@@ -164,8 +194,8 @@ function enterBreak(state, atInstant) {
 function enterWork(state, preset, now, effects) {
     var st = Object.assign({}, state);
     st.phase = "work";
-    st.preset = preset;
-    st.deadline = now + preset.workMin * MIN;
+    st.preset = normalizePreset(preset); // store sane values for later breaks/continues
+    st.deadline = now + st.preset.workMin * MIN;
     st.pendingBreak = false;
     st.largeBreak = false;
     st.continueEnabled = false;
