@@ -1,9 +1,11 @@
 /*
- * Chime adapter — audible cue at break start only.
+ * Chime adapter — audible cue when a Break starts and when the Desk Overlay
+ * appears (SPEC-002).
  *
- * Uses QtMultimedia MediaPlayer (ffmpeg-backed, decodes the freedesktop theme's
- * Ogg samples). SoundEffect was rejected: it decodes via QWaveDecoder, which is
- * WAV-only, and the freedesktop sound theme ships only .oga files.
+ * Uses QtMultimedia MediaPlayer (ffmpeg-backed, decodes Ogg/Vorbis) with the
+ * bundled soft piano arpeggio in ../sounds/, resolved relative to this file so
+ * it works from the installed package path. SoundEffect was rejected: it
+ * decodes via QWaveDecoder, which is WAV-only.
  * Loaded via a Loader from main.qml for graceful degradation.
  */
 import QtQuick
@@ -12,7 +14,7 @@ import QtMultimedia
 QtObject {
     id: chimer
 
-    readonly property string sampleUrl: "file:///usr/share/sounds/freedesktop/stereo/alarm-clock-elapsed.oga"
+    readonly property string sampleUrl: Qt.resolvedUrl("../sounds/pomodoro-chime.ogg")
 
     property MediaPlayer sound: MediaPlayer {
         source: chimer.sampleUrl
