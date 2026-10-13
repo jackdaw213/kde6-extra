@@ -14,12 +14,30 @@ function largeBreakMinutes(breakMin) {
 
 var CYCLE_LENGTH_DEFAULT = 4; // three normal breaks, then a large one
 
+var DESK_MINUTES_DEFAULT = 30; // Desk Reminder interval when the host supplies garbage
+
+// Canonical Built-in presets — always occupy slots 0-2 of the six-slot preset
+// storage (SPEC-002); a lost or garbled slot is re-seeded from here.
+var BUILTIN_SLOTS = [
+    { label: "50/10", workMin: 50, breakMin: 10 },
+    { label: "25/5", workMin: 25, breakMin: 5 },
+    { label: "45/15", workMin: 45, breakMin: 15 }
+];
+
 // Hostile-value guards: config JSON is user-editable and presets arrive from
 // both the editor and (raw) from restored snapshots. A garbage minute value
 // must degrade to a safe fallback, never to a hung timer or a skipped rest.
 function saneMinutes(v, fallback) {
     var n = Math.round(Number(v));
     return (isFinite(n) && n > 0) ? n : fallback;
+}
+
+// UI naming contract: a preset's label IS its minutes ("W/B") — there is no
+// custom name field anywhere. Built-ins keep their canonical labels; user
+// presets are always relabeled through this, so the grid/star picker/rows all
+// show the same minutes-derived identity with zero extra UI work.
+function derivedLabel(workMin, breakMin) {
+    return saneMinutes(workMin, 0) + "/" + saneMinutes(breakMin, 0);
 }
 
 // Returns a preset whose minute fields are guaranteed sane. largeBreakMin is
@@ -42,6 +60,72 @@ function saneCycleLength(v) {
     return (isFinite(n) && n >= 1) ? n : CYCLE_LENGTH_DEFAULT;
 }
 
+// True when p is a preset object worth keeping: a real label and sane minutes.
+function isSanePreset(p) {
+    return !!(p && typeof p === "object"
+        && typeof p.label === "string" && p.label.length > 0
+        && saneMinutes(p.workMin, 0) > 0
+        && saneMinutes(p.breakMin, 0) > 0);
+}
+
+// Slot index of the canonical Built-in equal to p, or -1. Equality is exact on
+// label and minutes: a renamed or re-tuned entry is a user preset, not the built-in.
+// Public: the card's editor reuses this to refuse writes that locked storage
+// would silently drop.
+function builtinIndex(p) {
+    for (var i = 0; i < BUILTIN_SLOTS.length; i++) {
+        var b = BUILTIN_SLOTS[i];
+        if (p.label === b.label
+            && saneMinutes(p.workMin, 0) === b.workMin
+            && saneMinutes(p.breakMin, 0) === b.breakMin)
+            return i;
+    }
+    return -1;
+}
+
+// Normalizes the stored presets into the fixed six-slot shape (SPEC-002):
+// slots 0-2 are always the seeded Built-ins (re-seeded when a hand-edited or
+// legacy config lost them), slots 3-5 are user presets or null when empty.
+// Accepts a JSON string (config form) or an array. User presets are compacted
+// into slots 3-5 in document order (card-written JSON is already contiguous,
+// so that form is a fixed point); pre-SPEC-002 arrays could hold user presets
+// in slots 0-2 (deleting a built-in shifted customs up) — those survive by the
+// same compaction, capped at three, extras dropped, since the grid never grows.
+// User-slot labels are FORCED to derivedLabel(workMin, breakMin) on every read:
+// legacy hand-named entries ("custom", "Deep Work", …) migrate to the derived
+// form, which is the preset's only identity under the no-name-field contract.
+// (The exact-Built-in drop runs BEFORE the relabel, so a stored entry that
+// matches a Built-in lock-seed canonically and is never duplicated.)
+function normalizePresetSlots(raw) {
+    var arr = null;
+    try {
+        var v = typeof raw === "string" ? JSON.parse(raw || "null") : raw;
+        if (Array.isArray(v))
+            arr = v;
+    } catch (e) {
+        arr = null;
+    }
+    var users = [];
+    if (arr) {
+        arr.forEach(function (p) {
+            if (!isSanePreset(p))
+                return;
+            // Exact built-in matches are locked storage: they re-seed canonically
+            // and are never duplicated into the user slots.
+            if (builtinIndex(p) >= 0)
+                return;
+            if (users.length < 3)
+                users.push(Object.assign({}, p, { label: derivedLabel(p.workMin, p.breakMin) }));
+        });
+    }
+    var out = [];
+    for (var b = 0; b < 3; b++)
+        out.push(Object.assign({}, BUILTIN_SLOTS[b]));
+    for (var u = 0; u < 3; u++)
+        out.push(users[u] || null);
+    return out;
+}
+
 function initialState() {
     return decorate({
         phase: "idle",
@@ -52,6 +136,14 @@ function initialState() {
         pendingBreak: false,  // true while working through a delayed break
         continueEnabled: false,
         largeBreak: false,
+        // Desk Reminder (SPEC-002): independent auxiliary countdown. Host-supplied
+        // config rides the state like cycleLength; deskDeadline is epoch ms with
+        // 0 = not armed, deskDue = the prompt is up awaiting acknowledgement.
+        deskDeadline: 0,
+        deskDue: false,
+        deskEnabled: false,
+        deskMinutes: DESK_MINUTES_DEFAULT,
+        defaultPreset: null,  // host-resolved star preset; null = built-in default
         effects: []
     });
 }
@@ -90,16 +182,33 @@ function handle(state, intent, now) {
         if (state.phase !== "work")
             return state;
         return enterBreak(state, now);
+    case "deskAck":
+        // "Done — I switched": dismiss the Desk Overlay and start a fresh posture
+        // interval — but only while work keeps running; otherwise nothing to arm.
+        if (state.deskDue !== true)
+            return state;
+        var acked = Object.assign({}, state);
+        acked.deskDue = false;
+        acked.deskDeadline = (acked.phase === "work" && acked.deskEnabled === true)
+            ? now + saneMinutes(acked.deskMinutes, DESK_MINUTES_DEFAULT) * MIN
+            : 0;
+        return withEffects(acked, [{ type: "hideOverlay" }]);
     case "disable":
         if (state.phase === "disabled")
             return state;
-        var hid = (state.phase === "break" || state.phase === "wait")
+        // hideOverlay for any overlay that could be up: break/wait content, or
+        // defensively the desk prompt (unreachable via the fullscreen UI, but the
+        // machine must not assume the UI).
+        var hid = (state.phase === "break" || state.phase === "wait" || state.deskDue)
             ? [{ type: "hideOverlay" }] : [];
         return withEffects(disable(state), hid);
     case "enable":
         if (state.phase !== "disabled")
             return state;
-        return enterWork(state, DEFAULT_PRESET, now, []);
+        // SPEC-002: the Default Preset is chosen in the card (any of the six
+        // slots); the host resolves the config index and supplies the preset —
+        // null/garbage falls back to the built-in default via normalization.
+        return enterWork(state, state.defaultPreset || DEFAULT_PRESET, now, []);
     default:
         return state;
     }
@@ -123,9 +232,47 @@ function tick(state, now) {
             acc = acc.concat(st.effects);
             continue;
         }
+        if (st.phase === "work") {
+            var desky = deskStep(st, now);
+            if (desky !== st) {
+                st = desky;
+                acc = acc.concat(st.effects);
+                continue;
+            }
+        }
         break;
     }
     return withEffects(st, acc);
+}
+
+// One Desk Reminder step while a Work Block is timing (spec: counts only during
+// work, ticks like the work deadline). Arms lazily when the host enables it
+// mid-block or a legacy snapshot carries no desk deadline; fires exactly once
+// into the desk-due state; clears itself when the toggle is off.
+function deskStep(state, now) {
+    if (state.deskEnabled !== true) {
+        if (!state.deskDeadline && !state.deskDue)
+            return state;
+        var off = Object.assign({}, state);
+        off.deskDeadline = 0;
+        off.deskDue = false;
+        return decorate(off);
+    }
+    if (state.deskDue === true)
+        return state;
+    var dm = saneMinutes(state.deskMinutes, DESK_MINUTES_DEFAULT);
+    if (!state.deskDeadline) {
+        var armed = Object.assign({}, state);
+        armed.deskDeadline = now + dm * MIN;  // full interval from now
+        return decorate(armed);
+    }
+    if (now >= state.deskDeadline) {
+        var due = Object.assign({}, state);
+        due.deskDue = true;
+        due.deskDeadline = 0;  // countdown stops; the prompt persists until ack/supersede
+        return withEffects(due, [{ type: "showDeskOverlay" }, { type: "chime" }]);
+    }
+    return state;
 }
 
 function enterWait(state) {
@@ -143,8 +290,8 @@ function withEffects(state, effects) {
     return decorate(st);
 }
 
-// Resume working through a break: extend the deadline, un-count the aborted break
-// (when coming from break; already-un-counted when extending an active delay).
+// "Disable for now" (meeting mode): suspend everything — no deadline, no desk
+// countdown, no desk prompt.
 function disable(state) {
     var st = Object.assign({}, state);
     st.phase = "disabled";
@@ -152,10 +299,15 @@ function disable(state) {
     st.pendingBreak = false;
     st.continueEnabled = false;
     st.largeBreak = false;
+    st.deskDeadline = 0;
+    st.deskDue = false;
     return decorate(st);
 }
 
-var DEFAULT_PRESET = { label: "50/10", workMin: 50, breakMin: 10 };
+var DEFAULT_PRESET = BUILTIN_SLOTS[0];
+
+// Resume working through a break: extend the deadline, un-count the aborted break
+// (when coming from break; already-un-counted when extending an active delay).
 function delayWork(state, now, extensionMs) {
     var st = Object.assign({}, state);
     st.phase = "work";
@@ -190,6 +342,10 @@ function enterBreak(state, atInstant) {
     st.completedBlocks = breakNo;
     st.largeBreak = isLarge;
     st.continueEnabled = false;
+    // A due Break unconditionally outranks a pending Desk Overlay (spec): the
+    // prompt is superseded and the countdown restarts with the next work phase.
+    st.deskDue = false;
+    st.deskDeadline = 0;
     st.effects = effects;
     return decorate(st);
 }
@@ -202,6 +358,12 @@ function enterWork(state, preset, now, effects) {
     st.pendingBreak = false;
     st.largeBreak = false;
     st.continueEnabled = false;
+    // Every fresh Work Block starts a new posture interval (only when the Desk
+    // Reminder is on; otherwise no countdown may exist at all).
+    st.deskDue = false;
+    st.deskDeadline = st.deskEnabled === true
+        ? now + saneMinutes(st.deskMinutes, DESK_MINUTES_DEFAULT) * MIN
+        : 0;
     st.effects = effects;
     return decorate(st);
 }

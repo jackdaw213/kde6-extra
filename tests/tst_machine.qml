@@ -174,7 +174,7 @@ TestCase {
         compare(st.largeBreak, true);
     }
 
-    // --- Slice 7: disable for a meeting, custom one-off values ---
+    // --- Slice 7: disable for a meeting, arbitrary preset payloads ---
 
     function test_disable_stopsEverything() {
         var st = Machine.handle(start50x10(), { type: "disable" }, t0 + 10 * min);
@@ -197,6 +197,31 @@ TestCase {
         compare(st.preset.breakMin, 10);
         compare(st.deadline, t0 + 90 * min);
         compare(st.completedBlocks, 0);
+    }
+
+    // --- Slice 14: Enable starts the Default Preset chosen in the card ---
+
+    function test_enable_usesHostSuppliedDefaultPreset() {
+        var dis = Machine.handle(start50x10(), { type: "disable" }, t0 + 10 * min);
+        dis.defaultPreset = { label: "25/5", workMin: 25, breakMin: 5 };
+        var st = Machine.handle(dis, { type: "enable" }, t0 + 40 * min);
+        compare(st.preset.label, "25/5");        // the starred slot, not list position
+        compare(st.deadline, t0 + 65 * min);
+    }
+
+    function test_enable_withoutHostDefault_stillUsesBuiltIn50x10() {
+        var dis = Machine.handle(start50x10(), { type: "disable" }, t0 + 10 * min);
+        dis.defaultPreset = null;
+        var st = Machine.handle(dis, { type: "enable" }, t0 + 40 * min);
+        compare(st.preset.label, "50/10");
+    }
+
+    function test_enable_withGarbageHostDefault_degradesToBuiltIn() {
+        var dis = Machine.handle(start50x10(), { type: "disable" }, t0 + 10 * min);
+        dis.defaultPreset = { label: "x", workMin: NaN, breakMin: -3 };
+        var st = Machine.handle(dis, { type: "enable" }, t0 + 40 * min);
+        compare(st.preset.workMin, 50);
+        compare(st.preset.breakMin, 10);
     }
 
     function test_tickIgnored_whileDisabled() {
@@ -242,6 +267,9 @@ TestCase {
     }
 
     function test_customValues_governBlockLikePreset() {
+        // The machine starts ANY {workMin,breakMin} preset payload — this
+        // powers user presets and restored snapshots. There is no separate
+        // Custom one-off UI row anymore (removed with the card overhaul).
         var st = Machine.handle(freshState(),
                                 { type: "startPreset", preset: { label: "custom", workMin: 37, breakMin: 9 } }, t0);
         compare(st.deadline, t0 + 37 * min);
@@ -258,6 +286,171 @@ TestCase {
         compare(Machine.largeBreakMinutes(12), 30);
         compare(Machine.largeBreakMinutes(13), 40);
         compare(Machine.largeBreakMinutes(20), 40);
+    }
+
+    // --- Slice 10: Desk Reminder arms at every Work Block start ---
+
+    function test_deskEnabled_armsCountdownAtWorkStart() {
+        var st = Machine.initialState();
+        st.deskEnabled = true;
+        st.deskMinutes = 30;
+        st = Machine.handle(st, { type: "startPreset", preset: defaultPreset() }, t0);
+        compare(st.phase, "work");
+        compare(st.deskDeadline, t0 + 30 * min);  // full interval from block start
+        compare(st.deskDue, false);
+    }
+
+    function test_deskDisabled_leavesNoCountdown() {
+        var st = Machine.handle(freshState(), { type: "startPreset", preset: defaultPreset() }, t0);
+        compare(st.deskDeadline, 0);
+        compare(st.deskDue, false);
+    }
+
+    // --- Slice 11: desk expiry, desk-due persistence, acknowledgement ---
+
+    function startDeskWork() {
+        var st = Machine.initialState();
+        st.deskEnabled = true;
+        st.deskMinutes = 30;
+        return Machine.handle(st, { type: "startPreset", preset: defaultPreset() }, t0);
+    }
+
+    function test_deskExpiry_showsOverlay_chimes_keepsWorkRunning() {
+        var st = Machine.handle(startDeskWork(), { type: "tick" }, t0 + 30 * min + 1);
+        compare(st.deskDue, true);
+        compare(st.deskDeadline, 0);              // countdown stops while due
+        compare(st.phase, "work");                // the Work Block keeps running underneath
+        compare(st.deadline, t0 + 50 * min);      // untouched
+        compare(st.effects.map(function (e) { return e.type; }),
+                ["showDeskOverlay", "chime"]);
+    }
+
+    function test_deskDue_persistsWithoutRefiring() {
+        var st = Machine.handle(startDeskWork(), { type: "tick" }, t0 + 31 * min);
+        st = Machine.handle(st, { type: "tick" }, t0 + 40 * min);
+        compare(st.deskDue, true);                // stays up until acknowledged/superseded
+        compare(st.effects.length, 0);            // no repeated chime
+    }
+
+    function test_deskAck_dismissesAndRestartsCountdown() {
+        var due = Machine.handle(startDeskWork(), { type: "tick" }, t0 + 31 * min);
+        var st = Machine.handle(due, { type: "deskAck" }, t0 + 35 * min);
+        compare(st.deskDue, false);
+        compare(st.deskDeadline, t0 + 35 * min + 30 * min); // full interval from NOW
+        compare(st.phase, "work");
+        compare(st.effects.map(function (e) { return e.type; }), ["hideOverlay"]);
+    }
+
+    function test_deskAck_withoutDuePromptIsANoop() {
+        var st = startDeskWork();
+        var after = Machine.handle(st, { type: "deskAck" }, t0 + 5 * min);
+        compare(after.effects.length, 0);
+        compare(after.deskDue, false);
+        compare(after.deskDeadline, t0 + 30 * min); // countdown untouched
+    }
+
+    // Defensive symmetry: if Disable somehow fires while the Desk Overlay is up
+    // (unreachable via the fullscreen UI today), the overlay must still be
+    // told to hide — matching disable-during-break behavior.
+    function test_disable_whileDeskDue_hidesOverlay() {
+        var due = Machine.handle(startDeskWork(), { type: "tick" }, t0 + 31 * min);
+        var st = Machine.handle(due, { type: "disable" }, t0 + 32 * min);
+        compare(st.phase, "disabled");
+        compare(st.deskDue, false);
+        compare(st.effects.map(function (e) { return e.type; }), ["hideOverlay"]);
+    }
+
+    // --- Slice 12: a due Break outranks the Desk Overlay; disable clears desk ---
+
+    function test_dueBreak_beatsDeskPrompt_atSameInstant() {
+        // Work and desk deadlines land on the same instant: the Break must win.
+        var st = Machine.initialState();
+        st.deskEnabled = true;
+        st = Machine.handle(st, { type: "startPreset", preset: defaultPreset() }, t0);
+        st = Machine.decorate(Object.assign({}, st, { deskDeadline: st.deadline }));
+        st = Machine.handle(st, { type: "tick" }, t0 + 50 * min);
+        compare(st.phase, "break");
+        compare(st.deskDue, false);                   // superseded, not co-existing
+        compare(st.deskDeadline, 0);                  // restarts with the next block
+        var types = st.effects.map(function (e) { return e.type; });
+        compare(types.indexOf("showDeskOverlay"), -1);
+        compare(types[0], "showOverlay");             // break content takes the window
+    }
+
+    function test_workExpiry_whileDeskDue_supersedesThePrompt() {
+        var due = Machine.handle(startDeskWork(), { type: "tick" }, t0 + 31 * min);
+        compare(due.deskDue, true);
+        var st = Machine.handle(due, { type: "tick" }, t0 + 50 * min + 1);
+        compare(st.phase, "break");
+        compare(st.deskDue, false);                   // prompt gone; break content shows
+        var types = st.effects.map(function (e) { return e.type; });
+        compare(types.indexOf("showDeskOverlay"), -1);
+    }
+
+    function test_disable_clearsDeskCountdownAndPrompt() {
+        var due = Machine.handle(startDeskWork(), { type: "tick" }, t0 + 31 * min);
+        var st = Machine.handle(due, { type: "disable" }, t0 + 33 * min);
+        compare(st.phase, "disabled");
+        compare(st.deskDue, false);
+        compare(st.deskDeadline, 0);
+        var armed = startDeskWork();
+        var off = Machine.handle(armed, { type: "disable" }, t0 + 3 * min);
+        compare(off.deskDeadline, 0);
+        compare(off.deskDue, false);
+    }
+
+    // --- Slice 13: desk countdown survives restarts (wall clock, raw states) ---
+
+    // Builds a state exactly the way main.qml's restore() does: raw fields, no
+    // handle() involved. Pre-SPEC-002 snapshots lack the desk fields entirely.
+    function restoredDeskState(deskDeadline, deskDue, deskEnabled) {
+        return Machine.decorate({
+            phase: "work", deadline: t0 + 50 * min,
+            preset: { label: "50/10", workMin: 50, breakMin: 10 },
+            completedBlocks: 0, cycleLength: 4,
+            pendingBreak: false, continueEnabled: false, largeBreak: false,
+            deskDeadline: deskDeadline, deskDue: deskDue, deskEnabled: deskEnabled,
+            deskMinutes: 30, defaultPreset: null, effects: []
+        });
+    }
+
+    function test_restartedDeskCountdown_resumesWithOriginalDeadline() {
+        var st = Machine.tick(restoredDeskState(t0 + 20 * min, false, true), t0 + 10 * min);
+        compare(st.phase, "work");
+        compare(st.deskDeadline, t0 + 20 * min);  // untouched by the restart
+        compare(st.effects.length, 0);
+        st = Machine.tick(st, t0 + 20 * min + 1); // then fires exactly once
+        compare(st.deskDue, true);
+        compare(st.effects.map(function (e) { return e.type; }),
+                ["showDeskOverlay", "chime"]);
+    }
+
+    function test_restartedDeskDue_promptSurvivesWithoutRechime() {
+        var st = Machine.tick(restoredDeskState(0, true, true), t0 + 45 * min);
+        compare(st.deskDue, true);   // overlay must come back after the restart
+        compare(st.effects.length, 0);
+        var acked = Machine.handle(st, { type: "deskAck" }, t0 + 46 * min);
+        compare(acked.deskDeadline, t0 + 46 * min + 30 * min);
+    }
+
+    function test_legacySnapshotWithoutDeskFields_armsFreshOnFirstTick() {
+        var st = Machine.tick(restoredDeskState(0, false, true), t0 + 10 * min);
+        compare(st.deskDeadline, t0 + 40 * min);  // lazily armed: full interval from now
+        compare(st.effects.length, 0);
+    }
+
+    function test_deskOff_neverArmsLazily() {
+        var st = Machine.tick(restoredDeskState(0, false, false), t0 + 10 * min);
+        compare(st.deskDeadline, 0);
+        compare(st.deskDue, false);
+        compare(st.effects.length, 0);
+    }
+
+    function test_hostileDeskMinutes_fallBackToDefaultInterval() {
+        var raw = restoredDeskState(0, false, true);
+        raw.deskMinutes = NaN;
+        var st = Machine.handle(raw, { type: "tick" }, t0 + 10 * min);
+        compare(st.deskDeadline, t0 + 10 * min + 30 * min);
     }
 
     // --- Slice 8: wall-clock restore across restarts ---
@@ -384,5 +577,199 @@ TestCase {
         compare(st0.largeBreak, true, "cycleLength 0 must fall back to 4 (4th block large)");
         var st1 = Machine.tick(mk(NaN), t0 + 50 * min);
         compare(st1.largeBreak, true, "cycleLength NaN must fall back to 4");
+    }
+
+    // --- Slice 15: six-slot preset storage (SPEC-002) ---
+    // NOTE: no for/while loops with array subscripts in these tests — this lint
+    // build crashes on that pattern (see the Slice 9 note above).
+
+    function test_slots_garbageYieldsSeededBuiltinsAndEmptyUserSlots() {
+        [null, "not json", "{}", 42].forEach(function (junk) {
+            var r = Machine.normalizePresetSlots(junk);
+            compare(r.length, 6, "junk=" + junk);
+            compare(r[0].label, "50/10", "junk=" + junk);
+            compare(r[1].label, "25/5", "junk=" + junk);
+            compare(r[2].label, "45/15", "junk=" + junk);
+            compare(r[3], null, "junk=" + junk);
+            compare(r[4], null, "junk=" + junk);
+            compare(r[5], null, "junk=" + junk);
+        });
+    }
+
+    function test_slots_handEditedAwayBuiltins_areReSeeded() {
+        var r = Machine.normalizePresetSlots(
+            '[null,{"label":"25/5","workMin":25,"breakMin":5},null,{"label":"My 60","workMin":60,"breakMin":9}]');
+        compare(r[0].label, "50/10");      // restored, never lost
+        compare(r[1].label, "25/5");
+        compare(r[2].label, "45/15");      // restored
+        compare(r[3].label, "60/9");       // user label derives from the minutes
+        compare(r[4], null);
+        compare(r[5], null);
+    }
+
+    function test_slots_legacyThreeEntryArray_migratesToSixSlots() {
+        var r = Machine.normalizePresetSlots(
+            '[{"label":"50/10","workMin":50,"breakMin":10},' +
+            '{"label":"25/5","workMin":25,"breakMin":5},' +
+            '{"label":"45/15","workMin":45,"breakMin":15}]');
+        compare(r.length, 6);
+        compare(r[0].label, "50/10");
+        compare(r[3], null);
+        compare(r[5], null);
+    }
+
+    function test_slots_legacyDisplacedUserPresets_moveIntoUserSlots() {
+        // Pre-SPEC-002 editor let users delete built-ins, shifting customs into
+        // slots 0-2. Nothing user-made may vanish: built-ins return to 0-2 and
+        // the customs land in the user slots, capped at three.
+        var legacy = '[{"label":"Mine A","workMin":11,"breakMin":2},' +
+            '{"label":"50/10","workMin":50,"breakMin":10},' +
+            '{"label":"Mine B","workMin":22,"breakMin":4},' +
+            '{"label":"Mine C","workMin":33,"breakMin":6},' +
+            '{"label":"Mine D","workMin":44,"breakMin":8},' +
+            '{"label":"Mine E","workMin":55,"breakMin":1}]';
+        var r = Machine.normalizePresetSlots(legacy);
+        compare(r[0].label, "50/10");
+        compare(r[1].label, "25/5");
+        compare(r[2].label, "45/15");
+        compare(r[3].label, "11/2");       // derived: "Mine A" was 11/2
+        compare(r[4].label, "22/4");       // derived: "Mine B" was 22/4
+        compare(r[5].label, "33/6");       // derived: "Mine C" was 33/6
+    }
+
+    function test_slots_junkUserEntries_becomeNulls() {
+        var r = Machine.normalizePresetSlots(
+            '[{"label":"50/10","workMin":50,"breakMin":10},' +
+            '{"label":"25/5","workMin":25,"breakMin":5},' +
+            '{"label":"45/15","workMin":45,"breakMin":15},' +
+            '"junk",{"label":"ok","workMin":30,"breakMin":6},{"workMin":-5,"breakMin":3}]');
+        compare(r[3].label, "30/6"); // sane user entries compact into slots 3-5
+        compare(r[4], null);
+        compare(r[5], null);
+    }
+
+    function test_slots_mutatedMinutes_noLongerMatchBuiltin_movesToUserSlot() {
+        // A pre-SPEC-002 edited "50/11" is not the built-in anymore: the built-in
+        // is restored AND the user's variant survives as a user preset.
+        var r = Machine.normalizePresetSlots(
+            '[{"label":"50/10","workMin":51,"breakMin":10},' +
+            '{"label":"25/5","workMin":25,"breakMin":5},' +
+            '{"label":"45/15","workMin":45,"breakMin":15}]');
+        compare(r[0].workMin, 50);
+        compare(r[3].label, "51/10");   // derived from the mutated minutes
+        compare(r[3].workMin, 51);
+    }
+
+    // --- Slice 16: derived preset labels (operator: no custom name field) ---
+
+    function test_slots_userLabels_areDerivedFromMinutes() {
+        // The label IS the minutes ("W/B"); stored names are ignored on read.
+        // Built-ins keep their canonical labels; legacy hand-named user entries
+        // ("Deep Work", "custom") migrate to the derived form.
+        var r = Machine.normalizePresetSlots(
+            '[{"label":"50/10","workMin":50,"breakMin":10},' +
+            '{"label":"25/5","workMin":25,"breakMin":5},' +
+            '{"label":"45/15","workMin":45,"breakMin":15},' +
+            '{"label":"Deep Work","workMin":90,"breakMin":12},' +
+            '{"label":"custom","workMin":25,"breakMin":5}]');
+        compare(r[0].label, "50/10");
+        compare(r[1].label, "25/5");
+        compare(r[2].label, "45/15");
+        compare(r[3].label, "90/12");
+        compare(r[4].label, "25/5");   // migrated
+        compare(r[3].workMin, 90);     // minutes themselves untouched
+        compare(r[4].workMin, 25);
+    }
+
+    function test_slots_legacyBuiltinMinuteEntry_convergesOnNextWrite() {
+        // Pinned round-5 migration edge: a legacy hand-named entry whose
+        // MINUTES equal a Built-in ("custom" 25/5) survives every READ (dedup
+        // matches its raw stored label first) and displays as a visual
+        // duplicate of that Built-in tile — but it is NOT durable storage.
+        // The card's mutators write the RELABELED normalized view, whose
+        // entry is an exact Built-in match, so the next read after any card
+        // write drops it: storage converges, silently, one write after the
+        // migration. This pins the convergence so a future refactor cannot
+        // accidentally turn it into duplicate storage or eager read-loss.
+        var r = Machine.normalizePresetSlots(
+            '[{"label":"50/10","workMin":50,"breakMin":10},' +
+            '{"label":"25/5","workMin":25,"breakMin":5},' +
+            '{"label":"45/15","workMin":45,"breakMin":15},' +
+            '{"label":"Deep Work","workMin":90,"breakMin":12},' +
+            '{"label":"custom","workMin":25,"breakMin":5}]');
+        compare(r[3].label, "90/12");      // filler occupies the first user slot
+        compare(r[4].label, "25/5");       // survives the read, relabeled
+        // Simulate any card mutation: it persists the relabeled view...
+        var echoed = JSON.stringify(r);
+        // ...and the next read converges: the Built-in identity is dropped.
+        var r2 = Machine.normalizePresetSlots(echoed);
+        compare(r2[4], null);
+        compare(r2[0].label, "50/10");     // the real Built-in stays canonical
+    }
+
+    function test_derivedLabel_returnsWorkOverBreak() {
+        compare(Machine.derivedLabel(25, 5), "25/5");
+        compare(Machine.derivedLabel(50, 10), "50/10");
+        compare(Machine.derivedLabel(45, 15), "45/15");
+        compare(Machine.derivedLabel(90, 12), "90/12");
+    }
+
+    function test_derivedLabelCollision_minutesAloneEqualBuiltin() {
+        // The card's Built-in-collision refusal composes derivedLabel with
+        // builtinIndex: a user preset whose MINUTES equal a Built-in derives
+        // the Built-in's label and is indistinguishable from it. Different
+        // minutes derive a different label: never a false positive.
+        compare(Machine.builtinIndex({
+            label: Machine.derivedLabel(25, 5), workMin: 25, breakMin: 5 }), 1);
+        compare(Machine.builtinIndex({
+            label: Machine.derivedLabel(50, 10), workMin: 50, breakMin: 10 }), 0);
+        compare(Machine.builtinIndex({
+            label: Machine.derivedLabel(50, 11), workMin: 50, breakMin: 11 }), -1);
+    }
+
+    // --- Slice 17: UI-normalized presets keep the explicit-large contract ---
+    // The card editor writes {label, workMin, breakMin} plus largeBreakMin only
+    // when >0. Regression: that exact shape must honor the auto rule vs the
+    // explicit override at the 4th (Large) break.
+
+    function test_uiNormalizedPreset_omittedLargeBreak_usesAutoRule() {
+        var slots = Machine.normalizePresetSlots(
+            '[{"label":"50/10","workMin":50,"breakMin":10},' +
+            '{"label":"25/5","workMin":25,"breakMin":5},' +
+            '{"label":"45/15","workMin":45,"breakMin":15},' +
+            '{"label":"40/4","workMin":40,"breakMin":4}]');
+        var st = Machine.handle(freshState(), { type: "startPreset", preset: slots[3] }, t0);
+        compare(st.preset.label, "40/4");
+        var when = t0;
+        for (let i = 0; i < 3; i++) {
+            st = Machine.handle(st, { type: "tick" }, when + 40 * min); // work expires
+            st = Machine.handle(st, { type: "tick" }, when + 45 * min); // break over
+            st = Machine.handle(st, { type: "continue" }, when + 45 * min);
+            when = when + 45 * min;
+        }
+        st = Machine.handle(st, { type: "tick" }, when + 40 * min);     // 4th expires
+        compare(st.phase, "break");
+        compare(st.largeBreak, true);
+        compare(st.deadline, when + 40 * min + 20 * min);  // rule: break 4 → 20
+    }
+
+    function test_uiNormalizedPreset_explicitLargeBreak_wins() {
+        var slots = Machine.normalizePresetSlots(
+            '[{"label":"50/10","workMin":50,"breakMin":10},' +
+            '{"label":"25/5","workMin":25,"breakMin":5},' +
+            '{"label":"45/15","workMin":45,"breakMin":15},' +
+            '{"label":"40/4","workMin":40,"breakMin":4,"largeBreakMin":45}]');
+        var st = Machine.handle(freshState(), { type: "startPreset", preset: slots[3] }, t0);
+        var when = t0;
+        for (let i = 0; i < 3; i++) {
+            st = Machine.handle(st, { type: "tick" }, when + 40 * min);
+            st = Machine.handle(st, { type: "tick" }, when + 45 * min);
+            st = Machine.handle(st, { type: "continue" }, when + 45 * min);
+            when = when + 45 * min;
+        }
+        st = Machine.handle(st, { type: "tick" }, when + 40 * min);
+        compare(st.phase, "break");
+        compare(st.largeBreak, true);
+        compare(st.deadline, when + 40 * min + 45 * min);  // explicit 45 wins
     }
 }

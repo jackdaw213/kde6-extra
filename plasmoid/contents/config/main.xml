@@ -5,10 +5,27 @@
   <kcfgfile name=""/>
 
   <group name="General">
-    <!-- Preset list as JSON: [{label, workMin, breakMin, largeBreakMin?}]; first entry is the default.
-         Seeded 50/10, 25/5, 45/15. Capped at 5 entries by the editor. -->
+    <!-- Preset slots as exactly six JSON entries: indexes 0-2 are the Built-ins
+         (50/10, 25/5, 45/15) and are re-seeded if a hand-edit removes them;
+         indexes 3-5 are user presets, null = empty slot. Edited in the popup
+         card (SPEC-002); the card never writes Built-in entries. -->
     <entry name="presets" type="String">
-      <default>[{"label":"50/10","workMin":50,"breakMin":10},{"label":"25/5","workMin":25,"breakMin":5},{"label":"45/15","workMin":45,"breakMin":15}]</default>
+      <default>[{"label":"50/10","workMin":50,"breakMin":10},{"label":"25/5","workMin":25,"breakMin":5},{"label":"45/15","workMin":45,"breakMin":15},null,null,null]</default>
+    </entry>
+
+    <!-- Index of the starred Default Preset (0-5), started by Enable. Any slot
+         may carry it; 0 is the fallback for empty/out-of-range stars. -->
+    <entry name="defaultPreset" type="Int">
+      <default>0</default>
+    </entry>
+
+    <!-- Desk Reminder: auxiliary posture countdown that runs only during Work
+         Blocks and raises the Desk Overlay on expiry. -->
+    <entry name="deskReminderEnabled" type="Bool">
+      <default>false</default>
+    </entry>
+    <entry name="deskReminderMinutes" type="Int">
+      <default>30</default>
     </entry>
 
     <!-- Cycle length: every Nth Work Block's Break is a Large Break. Default 4. -->
@@ -17,7 +34,8 @@
     </entry>
 
     <!-- Machine state snapshot (phase, deadline, preset, completedBlocks, cycleLength,
-         pendingBreak, largeBreak) written on every state change; wall-clock restore on load. -->
+         pendingBreak, largeBreak, deskDeadline, deskDue) written on every state
+         change; wall-clock restore on load. -->
     <entry name="stateSnapshot" type="String">
       <default></default>
     </entry>
