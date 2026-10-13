@@ -19,7 +19,19 @@ PlasmoidItem {
     id: root
 
     compactRepresentation: CompactRepresentation { ctrl: controller }
-    fullRepresentation: FullRepresentation { ctrl: controller; presetsJson: root.cfgPresets }
+    fullRepresentation: FullRepresentation {
+        ctrl: controller
+        presetsJson: root.cfgPresets
+        defaultPreset: root.cfgDefaultPreset
+        deskReminderEnabled: root.cfgDeskReminderEnabled
+        deskReminderMinutes: root.cfgDeskReminderMinutes
+        // Card writes persist straight into the kcfg database; the cfg* bindings
+        // echo them back so the grid re-renders from the stored truth.
+        onPresetsWritten: (json) => Plasmoid.configuration.presets = json
+        onDefaultPresetWritten: (presetIndex) => Plasmoid.configuration.defaultPreset = presetIndex
+        onDeskReminderEnabledWritten: (enabled) => Plasmoid.configuration.deskReminderEnabled = enabled
+        onDeskReminderMinutesWritten: (minutes) => Plasmoid.configuration.deskReminderMinutes = minutes
+    }
 
     // ------------------------------------------------------------------ controller
 
@@ -35,6 +47,10 @@ PlasmoidItem {
         property bool largeBreak: controller.state.largeBreak === true
         property bool pendingBreak: controller.state.pendingBreak === true
         property var preset: controller.state.preset
+        // Desk Overlay mode: the same overlay window shows the desk prompt while
+        // it is due; a break/wait phase always takes the window instead (the
+        // machine clears deskDue on every break, so this cannot deadlock).
+        property bool deskDue: controller.state.deskDue === true
 
         // Remaining time of the active phase ("" when there is nothing to count down).
         readonly property string remainingText: {
@@ -77,7 +93,9 @@ PlasmoidItem {
                 || next.deadline !== controller.state.deadline
                 || next.completedBlocks !== controller.state.completedBlocks
                 || next.pendingBreak !== controller.state.pendingBreak
-                || next.continueEnabled !== controller.state.continueEnabled;
+                || next.continueEnabled !== controller.state.continueEnabled
+                || next.deskDeadline !== controller.state.deskDeadline
+                || next.deskDue !== controller.state.deskDue;
             controller.state = Machine.decorate(next);
             if (changed) {
                 executeEffects();
@@ -100,6 +118,7 @@ PlasmoidItem {
             for (let i = 0; i < effects.length; i++) {
                 switch (effects[i].type) {
                 case "showOverlay":
+                case "showDeskOverlay":  // same window; Overlay picks the content by mode
                     overlayWindow.open();
                     break;
                 case "hideOverlay":
@@ -123,7 +142,11 @@ PlasmoidItem {
                 completedBlocks: controller.state.completedBlocks,
                 cycleLength: controller.state.cycleLength,
                 pendingBreak: controller.state.pendingBreak,
-                largeBreak: controller.state.largeBreak === true
+                largeBreak: controller.state.largeBreak === true,
+                // Desk fields restore by wall clock like the main deadline; a
+                // due prompt must survive too or a restart would hide the overlay.
+                deskDeadline: controller.state.deskDeadline,
+                deskDue: controller.state.deskDue === true
             });
         }
 
@@ -131,10 +154,6 @@ PlasmoidItem {
 
         function startPreset(preset) {
             dispatch("startPreset", { preset: preset });
-        }
-
-        function startCustom(workMin, breakMin) {
-            dispatch("startPreset", { preset: { label: "custom", workMin: workMin, breakMin: breakMin } });
         }
 
         function continueBreak() {
@@ -161,6 +180,10 @@ PlasmoidItem {
             dispatch("enable");
         }
 
+        function deskAck() {
+            dispatch("deskAck");
+        }
+
         // Restore the persisted snapshot and settle it with one wall-clock tick:
         // a deadline crossed while away transitions immediately (overlay returns
         // mid-break, or lands in enabled-continue wait) without stretching time.
@@ -175,6 +198,7 @@ PlasmoidItem {
                 && typeof snap.preset.workMin === "number" && isFinite(snap.preset.workMin)
                 && typeof snap.preset.breakMin === "number" && isFinite(snap.preset.breakMin);
             var validCycle = snap && Number.isInteger(snap.cycleLength) && snap.cycleLength > 0;
+            var validDesk = snap && typeof snap.deskDeadline === "number" && isFinite(snap.deskDeadline);
             if (snap
                 && typeof snap.phase === "string"
                 && typeof snap.deadline === "number" && isFinite(snap.deadline)
@@ -188,18 +212,27 @@ PlasmoidItem {
                     pendingBreak: snap.pendingBreak === true,
                     continueEnabled: snap.phase === "wait",
                     largeBreak: snap.largeBreak === true,
+                    deskDeadline: validDesk ? snap.deskDeadline : 0,
+                    deskDue: snap.deskDue === true,
+                    deskEnabled: root.cfgDeskReminderEnabled,
+                    deskMinutes: root.cfgDeskReminderMinutes,
+                    defaultPreset: root.defaultPresetObj,
                     effects: []
                 });
             } else {
                 controller.state = Machine.initialState();
                 controller.state.cycleLength = root.cfgCycleLength || Machine.CYCLE_LENGTH_DEFAULT;
+                controller.state.deskEnabled = root.cfgDeskReminderEnabled;
+                controller.state.deskMinutes = root.cfgDeskReminderMinutes;
+                controller.state.defaultPreset = root.defaultPresetObj;
             }
             controller.loaded = true;
             tick();
             // A plasmashell restart mid-break or mid-wait must not leave the break
-            // unenforced: no boundary is crossed for a future deadline, so show the
-            // overlay directly from the restored phase.
-            if (controller.state.phase === "break" || controller.state.phase === "wait")
+            // unenforced, and a due desk prompt must come back: no boundary is
+            // crossed for future deadlines, so show the overlay from the restored
+            // phase directly.
+            if (controller.state.phase === "break" || controller.state.phase === "wait" || controller.state.deskDue)
                 overlayWindow.open();
         }
     }
@@ -219,6 +252,48 @@ PlasmoidItem {
         controller.state.cycleLength = cfgCycleLength;
     }
     readonly property string cfgPresets: Plasmoid.configuration.presets
+
+    // ------------------------------------------------- preset card & desk config
+
+    readonly property int cfgDefaultPreset: Plasmoid.configuration.defaultPreset
+    readonly property bool cfgDeskReminderEnabled: Plasmoid.configuration.deskReminderEnabled
+    readonly property int cfgDeskReminderMinutes: Plasmoid.configuration.deskReminderMinutes
+
+    // Six-slot view of the stored presets (machine normalization re-seeds lost
+    // Built-ins on every read).
+    readonly property var presetSlots: Machine.normalizePresetSlots(cfgPresets)
+
+    // The starred preset resolved to an object for the machine's enable intent;
+    // empty or out-of-range stars fall back to the first Built-in.
+    readonly property var defaultPresetObj: {
+        var s = root.presetSlots;
+        var i = root.cfgDefaultPreset;
+        return (i >= 0 && i <= 5 && s[i]) ? s[i] : s[0];
+    }
+
+    // Push the resolved star into the machine so Enable starts the chosen preset.
+    function syncDefaultPreset() {
+        if (!controller.loaded)
+            return;
+        controller.state.defaultPreset = root.defaultPresetObj;
+    }
+    onCfgPresetsChanged: root.syncDefaultPreset()
+    onCfgDefaultPresetChanged: root.syncDefaultPreset()
+
+    onCfgDeskReminderEnabledChanged: {
+        if (!controller.loaded)
+            return;
+        controller.state.deskEnabled = cfgDeskReminderEnabled;
+        if (!cfgDeskReminderEnabled && controller.state.deskDue) {
+            // Toggling off must not leave the prompt hanging: acknowledge through
+            // the machine so the overlay closes by the very same path as the button.
+            controller.deskAck();
+        }
+    }
+    onCfgDeskReminderMinutesChanged: {
+        if (controller.loaded)
+            controller.state.deskMinutes = cfgDeskReminderMinutes;
+    }
 
     Component.onCompleted: controller.restore()
 
