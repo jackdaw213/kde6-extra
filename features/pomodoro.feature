@@ -62,7 +62,7 @@ Feature: Pomodoro panel widget
     Given any state
     When I choose "Disable for now"
     Then all timing, overlay, and media-pause behavior is suspended
-    And re-enabling starts a fresh default (50/10) Work Block
+    And re-enabling starts a fresh Work Block of the Default Preset
 
   Scenario: Reboot mid-phase
     Given a Work Block or Break with a wall-clock deadline was running
@@ -74,12 +74,98 @@ Feature: Pomodoro panel widget
     When the machine ticks after restart
     Then the break deadline is anchored to the original expiry instant, not the restart time
 
-  Scenario: Custom values
-    Given the popup's custom editor
-    When I set any work and break minute pair and start
-    Then that one-off pair governs the block exactly like a preset
+  # Superseded (removed with the Custom row in the card overhaul): the Custom
+  # one-off editor is gone — user presets cover arbitrary (work, break) pairs,
+  # and the machine still starts any preset payload (restored snapshots).
 
-  Scenario: Preset cap
-    Given the user edits presets
-    When they try to add a 6th preset
-    Then the addition is refused with an explanatory message
+  # Superseded by SPEC-002: the card holds exactly six fixed slots (three
+  # locked Built-ins + three user slots); there is no open-ended list to
+  # overflow and no refusal path exists anymore.
+
+  Feature extension: preset grid, in-card management, Desk Reminder, chime (SPEC-002)
+
+  Scenario: Six preset slots in a 2x3 grid
+    Given the widget is idle
+    When I open the popup
+    Then presets appear as two rows of three with slightly larger font
+    And the three Built-ins (50/10, 25/5, 45/15) are always present and undeletable
+
+  Scenario: Clicking a grid preset starts it
+    Given the widget is idle
+    When I click a preset in the grid
+    Then a Work Block of that preset's work length starts immediately
+
+  Scenario: Default preset is chosen, not positional
+    Given the popup card is open
+    When I set the Default Preset marker on any of the six slots
+    Then that preset is starred in the grid
+    And re-enabling after "Disable for now" starts that preset
+
+  Scenario: Managing user presets in the card
+    Given the popup card is open
+    When I add a user preset (at most three exist)
+    Then it occupies the user slot whose row offered the Add preset button
+    And it is created as a 30/5 rhythm — never a Built-in duplicate
+    When I edit or delete a user preset in the card
+    Then the change is immediate and the grid reflects it
+    But Built-in presets expose no edit or delete controls
+
+  Scenario: User preset labels derive from the minutes
+    Given the popup card is open
+    When I create or edit a user preset to 40 work minutes and 6 break minutes
+    Then it is labeled "40/6" in the grid and the star picker — its row identifies it by its Work and Break spin values
+    And no control offers a custom preset name
+    When I tune a user preset's minutes onto a Built-in's exact rhythm
+    Then the change is refused with "change the minutes" guidance
+
+  Scenario: Per-preset Large break, 0 means automatic
+    Given the popup card is open
+    When I set a user preset's Large break to 0
+    Then its scheduled Large Break length is derived automatically: break ≤6 min gives 20, 7–12 gives 30, ≥13 gives 40
+    When I set the user preset's Large break to 45
+    Then its scheduled Large Break lasts 45 minutes
+
+  Scenario: No presets page in Configure
+    Given I open the widget's Configure dialog
+    Then there is no Presets page
+
+  Scenario: Desk reminder counts only during work
+    Given the Desk Reminder is enabled with a 30 minute interval
+    When a Work Block starts
+    Then the desk countdown begins at 30 minutes
+    And it advances only while the phase is work
+    When a new Work Block starts
+    Then the desk countdown is back to 30 minutes
+
+  Scenario: Desk overlay prompts a height change
+    Given a Work Block is running and the desk countdown reaches zero
+    Then a fullscreen overlay appears
+    And it says to change the standing desk height by doing the reverse of what I'm doing now
+    And a chime plays
+    And the Work Block keeps running underneath
+
+  Scenario: Acknowledging the desk overlay
+    Given the Desk Overlay is up
+    When I press "Done — I switched"
+    Then the overlay goes away
+    And the desk countdown restarts at the full interval
+
+  Scenario: Break outranks the desk overlay
+    Given the Desk Overlay is up
+    When the Work Block expires
+    Then the overlay shows Break content and the break is enforced as usual
+    And the desk countdown restarts with the next fresh Work Block
+
+  Scenario: Desk reminder can be switched off
+    Given the Desk Reminder toggle is off in the card
+    When Work Blocks run and expire
+    Then no desk countdown and no Desk Overlay ever occur
+
+  Scenario: Desk reminder survives a restart
+    Given a Work Block and a partly elapsed desk countdown were running
+    When the session restarts before the desk deadline
+    Then the desk countdown resumes with its original wall-clock deadline intact
+
+  Scenario: Pleasant short chime
+    Given a Break starts or the Desk Overlay appears
+    Then a bundled soft piano-style chime plays once, lasting roughly 2 to 3 seconds

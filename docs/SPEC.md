@@ -19,12 +19,15 @@ A Plasma 6 panel widget that runs Work Blocks and Breaks on selectable presets (
 3. As a user, I want left-click on the idle icon to open a popup of presets, so that starting a block is one click.
 4. As a user, I want 50/10 as the default preset, with 25/5 and 45/15 also offered, so that my preferred rhythm is the path of least resistance.
 5. As a user, I want to edit presets and add my own (work, break) pairs, capped at 5 total, so that the list stays short and personal.
+   *(Superseded by SPEC-002: six fixed slots — three locked Built-ins + three user presets — all managed in the popup card; the Default Preset is chosen, not positional.)*
 6. As a user, I want to set a fully custom one-off (work, break) pair, so that I'm not limited to the preset list.
+   *(Superseded round 2: the Custom one-off row was removed — user presets cover it; the machine still starts any preset payload.)*
 7. As a user, I want a work block to expire into a break automatically, so that rest is guaranteed, not remembered.
 8. As a user, I want the break to blow the entire screen with a fullscreen overlay, so that I physically cannot miss that it's rest time.
 9. As a user, I want the overlay to beat even fullscreen applications, so that a game or video can't hide my break from me.
 10. As a user, I want the break timer to start the instant the screen is blown, so that no time is lost between work ending and rest beginning.
 11. As a user, I want a chime at break start, so that I'm alerted even when not looking at the screen.
+    *(Superseded by SPEC-002: the chime is a bundled soft piano arpeggio, played at break start AND when the Desk Overlay appears.)*
 12. As a user, I want my playing music/videos to pause when a break starts, so that rest actually means resting (paused media never auto-resumes).
 13. As a user, I want the "Continue back to work" button disabled and grayed out for the whole break duration, so that I'm not tempted to cut rest short by accident.
 14. As a user, I want Continue to enable exactly when the break timer finishes and then wait indefinitely, so that taking 12 or 15 minutes instead of 10 costs me nothing and involves no second timer.
@@ -107,6 +110,7 @@ Feature: Pomodoro panel widget
     When I choose "Disable for now"
     Then all timing, overlay, and media-pause behavior is suspended
     And re-enabling starts a fresh default (50/10) Work Block
+    *(Re-enabling target superseded by SPEC-002: the Default Preset, chosen in the card.)*
 
   Scenario: Reboot mid-phase
     Given a Work Block or Break with a wall-clock deadline was running
@@ -131,10 +135,10 @@ Feature: Pomodoro panel widget
 - **Time**: every phase stores an absolute wall-clock deadline (epoch ms), never a countdown. Remaining time is `deadline − now`. Persistence = writing the deadline into the Plasmoid config; restoration = recompute on load. A deadline already passed at restore time transitions immediately (work expiry → break; break expiry → enabled-continue wait).
 - **Overlay contract**: the overlay is a widget-owned window bound to the controller's state: rest message, remaining mm:ss (from the wall-clock deadline, restart-surviving), Continue (disabled until break deadline, grayed), Skip (two-click confirm-guarded), Delay 5. Button handlers dispatch machine intents directly.
 - **Media pause**: at break start, enumerate MPRIS2 players on the session bus and call Pause on each. No resume path exists anywhere.
-- **Chime**: freedesktop sound-theme event (libcanberra or `KNotification`), played only at break start.
-- **Cycle**: integer counter in persisted config; incremented on every Work Block completion (expiry or "start break now"); break skip does not touch it. Large break due when `counter % cycleLength === 0` with `cycleLength` defaulting to 4. Cycle length and large-break derivation thresholds are user-configurable; per-preset explicit large-break minutes override derivation.
-- **Presets**: stored in the Plasmoid config as a list of {label, workMin, breakMin, largeBreakMin?}; default seed 50/10, 25/5, 45/15; editor enforces the 5-total cap.
-- **Panel UI**: Kirigami-based plasmoid representation; icon swaps to remaining-time text while running; popup lists presets, Custom…, Start break now (when applicable), Disable for now.
+- **Chime**: freedesktop sound-theme event (libcanberra or `KNotification`), played only at break start. *(Superseded by SPEC-002: bundled soft piano-style Ogg in the plasmoid, at break start and Desk Overlay.)*
+- **Cycle**: integer counter in persisted config; incremented on every Work Block completion (expiry or "start break now"); break skip does not touch it. Large break due when `counter % cycleLength === 0` with `cycleLength` defaulting to 4. Cycle length is user-configurable; the large-break derivation thresholds are fixed constants (see SPEC-002 round 5); per-preset explicit large-break minutes override derivation. *(Round 3b note: `cycleLength` is config-file-only since the Configure Presets page was removed; per-preset large-break editing is consciously deferred — see SPEC-002.)*
+- **Presets**: stored in the Plasmoid config as a list of {label, workMin, breakMin, largeBreakMin?}; default seed 50/10, 25/5, 45/15; editor enforces the 5-total cap. *(Superseded by SPEC-002: six fixed slots — three locked Built-ins + three user presets — managed in the popup card.)*
+- **Panel UI**: Kirigami-based plasmoid representation; icon swaps to remaining-time text while running; popup lists presets, Custom…, Start break now (when applicable), Disable for now. *(Superseded rounds 2–3: popup is a two-page card — 2×3 preset grid with dashed empty slots, gear-opened settings page with add/edit/delete/star and Desk Reminder; no Custom row.)*
 - **Packaging**: standard Plasmoid package (`metadata.json`, `ui/`, `contents/`), installable via `kpackagetool6 -t Plasma/Applet`.
 
 ## Testing Decisions
