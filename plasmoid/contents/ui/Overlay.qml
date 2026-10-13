@@ -1,9 +1,13 @@
 /*
- * Break overlay — fullscreen LayerShellQt overlay surface (see docs/adr/0002).
+ * Break/Desk overlay — fullscreen LayerShellQt overlay surface (see docs/adr/0002).
  *
  * Owned by the plasmoid process: buttons call the machine controller directly.
  * Layer properties are set at construction (before the surface attaches); the
- * window is reused across breaks via the visible flag only.
+ * window is reused across shows via the visible flag only. One window, two
+ * modes (SPEC-002): the break content and the Desk Overlay prompt. The Break
+ * unconditionally wins the window; the desk prompt only shows while the machine
+ * reports deskDue in the work phase (the machine clears deskDue on every break).
+ * Keyboard interactivity stays off; every button works by pointer.
  *
  * Enforced content (per glossary):
  *  - "Rest time" + remaining break mm:ss (wall-clock deadline, restart-surviving)
@@ -11,6 +15,8 @@
  *    machine flips to "wait" (wall-clock, so it self-enables after a restart too)
  *  - Skip with a two-click confirmation ("Really skip this break?")
  *  - "Delay break 5 minutes" while the break is due (phase "break")
+ *  - Desk mode: reversal message + a single "Done — I switched" button that
+ *    dispatches deskAck (dismiss + fresh countdown)
  */
 import QtQuick
 import QtQuick.Controls as QQC2
@@ -29,7 +35,11 @@ QW.Window {
     color: "#101218"
     // i18n is injected at plasmoid runtime by plasmashell (KLocalizedContext) and
     // is declared in no qmltypes, so every use needs an explicit lint directive.
-    title: i18n("Pomodoro — rest time") // qmllint disable unqualified
+    title: overlay.deskMode
+           // qmllint disable unqualified
+           ? i18n("Pomodoro — desk time")
+           : i18n("Pomodoro — rest time")
+    // qmllint enable unqualified
 
     // --- layer surface definition (ATTACHED properties on this Window, applied at
     // construction before the surface attaches). LayerShellQt::Window is an attached
@@ -53,6 +63,10 @@ QW.Window {
     readonly property string phase: ctrl.phase
     readonly property bool breakDue: phase === "break"
     readonly property bool resting: phase === "break" || phase === "wait"
+    // Break wins the window unconditionally; desk mode is therefore only ever
+    // entered from the work phase (belt and suspenders: both machine facts are
+    // checked, the desk prompt can never cover break content).
+    readonly property bool deskMode: ctrl.deskDue === true && !overlay.resting
 
     // Skip guard: first click arms, second click (Yes) confirms.
     property bool skipArmed: false
@@ -79,9 +93,12 @@ QW.Window {
         anchors.fill: parent
         color: "#101218"
 
+        // ---------------------------------------------------------- break mode
+
         ColumnLayout {
             anchors.centerIn: parent
             spacing: Kirigami.Units.gridUnit
+            visible: overlay.resting
 
             QQC2.Label {
                 Layout.alignment: Qt.AlignHCenter
@@ -151,8 +168,50 @@ QW.Window {
                 Layout.alignment: Qt.AlignHCenter
                 Layout.preferredWidth: Kirigami.Units.gridUnit * 12
                 visible: overlay.breakDue
-                text: i18n("Delay break 5 minutes") // qmllint disable unqualified
+                // qmllint disable unqualified
+                text: i18n("Delay break 5 minutes")
+                // qmllint enable unqualified
                 onClicked: overlay.ctrl.delayBreak()
+            }
+        }
+
+        // ----------------------------------------------------------- desk mode
+
+        ColumnLayout {
+            anchors.centerIn: parent
+            spacing: Kirigami.Units.gridUnit
+            visible: overlay.deskMode
+
+            QQC2.Label {
+                Layout.alignment: Qt.AlignHCenter
+                color: "white"
+                font.pointSize: 34
+                font.weight: Font.Bold
+                // qmllint disable unqualified
+                text: i18n("Time to switch desks")
+                // qmllint enable unqualified
+            }
+
+            QQC2.Label {
+                Layout.alignment: Qt.AlignHCenter
+                color: "#c9d1d9"
+                font.pointSize: 18
+                horizontalAlignment: Text.AlignHCenter
+                // qmllint disable unqualified
+                text: i18n("Change your standing desk height —\ndo the reverse of what you are doing now.")
+                // qmllint enable unqualified
+                textFormat: Text.PlainText
+            }
+
+            QQC2.Button {
+                id: deskAckButton
+                Layout.alignment: Qt.AlignHCenter
+                Layout.preferredWidth: Kirigami.Units.gridUnit * 12
+                Layout.preferredHeight: Kirigami.Units.gridUnit * 2.6
+                // qmllint disable unqualified
+                text: i18n("Done — I switched")
+                // qmllint enable unqualified
+                onClicked: overlay.ctrl.deskAck()
             }
         }
     }
