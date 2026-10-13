@@ -540,18 +540,14 @@ TestCase {
                "start and delay share one row");
         verify(enable.mapToItem(f, 0, 0).y >= delay.mapToItem(f, 0, 0).y + delay.height - 0.5,
                "the small secondary sits below the running-actions row");
-        // Disable/Enable renders small-font (visually subordinate); the running
-        // actions stay primary. Compared against the card's existing smallFont
-        // consumer: the TestCase context resolves the theme differently.
+        // Round 7b (operator): the secondary matches Start break now's SIZE
+        // INCLUDING the font — same typeface metrics, subordinate by nothing.
         compare(enable.font.pointSize, findChild(f, "deskHint").font.pointSize,
-                "Enable/Disable must use the small font");
-        // Running actions keep the PRIMARY font: they must not carry the small
-        // font the secondary uses (fields can be expressed differently — the
-        // theme default is pixel-based here — so compare field-wise).
-        verify(start.font.pointSize !== enable.font.pointSize
-               || start.font.pixelSize !== enable.font.pixelSize
-               || start.font.family !== enable.font.family,
-               "running actions keep the primary (non-small) font");
+                "deskHint still uses the small font (reference consumer unchanged)");
+        compare(enable.font.pointSize, start.font.pointSize,
+                "Enable/Disable font must match Start break now's font");
+        compare(enable.font.pixelSize, start.font.pixelSize,
+                "Enable/Disable font must match Start break now's font (pixel)");
         let stripH0 = strip.height;
 
         // Work: Start break now goes live, frame unchanged.

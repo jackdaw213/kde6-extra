@@ -555,14 +555,14 @@ Item {
                         }
                     }
 
-                    // Small secondary: matches Start break now's size (shared
-                    // width above); the small font keeps it visually subordinate.
+                    // Small secondary: matches Start break now's size AND font
+                    // (shared width above, default font) — subordination comes
+                    // only from position (row below). Round 7b operator order.
                     PlasmaComponents.Button {
                         id: enableButton
 
                         objectName: "enableButton"
                         Layout.preferredWidth: actionStrip.sharedButtonWidth
-                        font: Kirigami.Theme.smallFont
                         icon.name: full.phase === "disabled" ? "checkmark" : "dialog-cancel"
                         // qmllint disable unqualified
                         text: full.phase === "disabled" ? i18n("Enable") : i18n("Disable for now")
