@@ -524,10 +524,18 @@ TestCase {
         for (let b of [start, delay, enable])
             verify(b.width < strip.width - 1,
                    b.objectName + " must be natural-width, got " + b.width + " of " + strip.width);
-        verify(Math.abs(start.width - start.implicitWidth) <= 1.0,
-               "Start break now keeps its natural width");
         verify(Math.abs(delay.width - delay.implicitWidth) <= 1.0,
                "Delay keeps its natural width");
+        // Round 7 (operator): "Disable for now should match the size of
+        // Start break now" — the secondary and the primary Start button share
+        // ONE width (the max of their naturals), so the two stacked buttons
+        // are the same size regardless of label length. Delay is exempt
+        // (different row, natural width).
+        verify(Math.abs(enable.width - start.width) <= 0.5,
+               "Enable/Disable must match Start break now's width ("
+               + enable.width + " vs " + start.width + ")");
+        verify(Math.abs(start.width - Math.max(start.implicitWidth, enable.implicitWidth)) <= 1.0,
+               "shared width is the max of both naturals, no eliding");
         verify(Math.abs(start.mapToItem(f, 0, 0).y - delay.mapToItem(f, 0, 0).y) <= 0.5,
                "start and delay share one row");
         verify(enable.mapToItem(f, 0, 0).y >= delay.mapToItem(f, 0, 0).y + delay.height - 0.5,

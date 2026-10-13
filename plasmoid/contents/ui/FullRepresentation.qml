@@ -503,9 +503,18 @@ Item {
                 // width), hence the second line. The strip keeps ONE constant
                 // height in every phase.
                 ColumnLayout {
+                    id: actionStrip
                     objectName: "actionStrip"
                     Layout.fillWidth: true
                     spacing: Kirigami.Units.smallSpacing
+
+                    // Round 7 (operator): Start break now and the Enable/
+                    // Disable secondary are the SAME SIZE — one shared width
+                    // (the max of both buttons' naturals, so neither label
+                    // elides); Delay 5 min stays natural in its own row.
+                    readonly property real sharedButtonWidth: Math.max(
+                        startBreakNowButton.implicitWidth,
+                        enableButton.implicitWidth)
 
                     RowLayout {
                         spacing: Kirigami.Units.smallSpacing
@@ -515,6 +524,7 @@ Item {
                             id: startBreakNowButton
 
                             objectName: "startBreakNowButton"
+                            Layout.preferredWidth: actionStrip.sharedButtonWidth
                             visible: true
                             opacity: full.working ? 1 : 0
                             enabled: full.working
@@ -545,11 +555,13 @@ Item {
                         }
                     }
 
-                    // Small secondary: visually subordinate, natural width.
+                    // Small secondary: matches Start break now's size (shared
+                    // width above); the small font keeps it visually subordinate.
                     PlasmaComponents.Button {
                         id: enableButton
 
                         objectName: "enableButton"
+                        Layout.preferredWidth: actionStrip.sharedButtonWidth
                         font: Kirigami.Theme.smallFont
                         icon.name: full.phase === "disabled" ? "checkmark" : "dialog-cancel"
                         // qmllint disable unqualified
