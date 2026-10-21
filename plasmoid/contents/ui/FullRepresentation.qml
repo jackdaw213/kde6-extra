@@ -16,7 +16,8 @@
  * the six slots, one compact uniform row per user slot (the editor when
  * occupied, an "Add preset" button when empty — creation and in-place editing
  * live here), one always-reserved Built-in-collision warning line, the
- * automatic-Large-Break-rule hint, and the Desk Reminder toggle + interval.
+ * automatic-Large-Break-rule hint, the Desk Reminder toggle + interval, and
+ * the Auto-start switch + Presence window (SPEC-003).
  * Round 5 (derived naming + per-preset Large): a preset's label IS its minutes
  * ("W/B" — pomodoro-machine.js forces user-slot labels through derivedLabel
  * on every read); there is NO name field anywhere. Each user row edits Work,
@@ -49,8 +50,8 @@
  * settings row to a single control line, and the card widens 17 → 21 grid
  * units — the minimal probed width that fits the one-line editor row plus
  * the desk row without eliding (editor row measures 349px vs 351px of
- * content width; 20gu = 333px ALREADY overflows). The two wrap-hint labels
- * (largeBreakHint, deskHint) reserve a FIXED height for their measured
+ * content width; 20gu = 333px ALREADY overflows). The wrap-hint labels
+ * (largeBreakHint, deskHint, autoStartHint) reserve a FIXED height for their measured
  * 2-line wrap at the constant content width: a wrapped QQC2 Label's implicit
  * height is width-dependent AND late-settling (the desktop style still
  * reports the one-line height after two polish passes — probed), which is
@@ -63,6 +64,7 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Controls as QQC2
 import QtQuick.Layouts
+import QtQuick.Window
 import org.kde.plasma.components as PlasmaComponents
 import org.kde.kirigami as Kirigami
 import "pomodoro-machine.js" as Machine
@@ -75,6 +77,10 @@ Item {
     property int defaultPreset
     property bool deskReminderEnabled
     property int deskReminderMinutes
+    // SPEC-003 config + lock-source availability (host-supplied).
+    property bool autoStartEnabled
+    property int autoStartMinutes
+    property bool lockSourceAvailable: true
 
     // Page state: the gear switches between the MAIN page (grid + running
     // actions + enable/disable) and the SETTINGS page (star picker, user
@@ -90,6 +96,8 @@ Item {
     signal defaultPresetWritten(int presetIndex)
     signal deskReminderEnabledWritten(bool enabled)
     signal deskReminderMinutesWritten(int minutes)
+    signal autoStartEnabledWritten(bool enabled)
+    signal autoStartMinutesWritten(int minutes)
 
     // i18n() is a global injected at plasmoid runtime by KLocalizedContext; it
     // has no importable type, so unqualified warnings on it are silenced here.
@@ -152,7 +160,7 @@ Item {
     readonly property real cellHeight: Kirigami.Units.gridUnit * 2.5
 
     // --- Round-6 clip fix: reserved wrap-hint heights ------------------------
-    // Both settings-page hint labels wrap (WordWrap) over the full card width.
+    // All settings-page hint labels wrap (WordWrap) over the full card width.
     // A wrapped QQC2 Label's implicitHeight is width-dependent and
     // late-settling — probed under org.kde.desktop it still reports the
     // ONE-line height (28px) after two polish passes while its two lines
@@ -165,9 +173,9 @@ Item {
     //   the 18px reference unit, where one wrapped small-font line measures
     //   ≈14px — 28px for 2 lines — leaving 12px+ of headroom over the box).
     //   Measured wraps at the 21gu content width: largeBreakHint 2 lines,
-    //   deskHint 1 line (it wrapped 2 at the narrower round-5 card — both
-    //   reserve the same 2-line height, so neither can ever clip and the
-    //   settings geometry is uniform).
+    //   deskHint 1 line, autoStartHint 2 lines (the desk hint wrapped 2 at
+    //   the narrower round-5 card — all reserve the same 2-line height, so
+    //   none can ever clip and the settings geometry is uniform).
     // Expressed in grid units because gridUnit is font-derived: reserve and
     // wrapped text scale TOGETHER (probed: the hint strings still wrap to ≤ 2
     // lines when font AND width co-scale ×1.25 and ×1.5), so the proportion
@@ -298,6 +306,18 @@ Item {
         full.deskReminderMinutesWritten(Machine.saneMinutes(mins, full.deskReminderMinutes));
     }
 
+    function setAutoStartEnabled(enabled) {
+        full.autoStartEnabledWritten(enabled === true);
+    }
+
+    function setAutoStartMinutes(mins) {
+        // Junk keeps the stored value; every real edit rounds and clamps 1-60.
+        var n = Math.round(Number(mins));
+        if (!isFinite(n))
+            n = full.autoStartMinutes;
+        full.autoStartMinutesWritten(Math.min(60, Math.max(1, n)));
+    }
+
     // 21 grid units — the MINIMAL probed width that fits the one-line preset
     // editor row plus the desk controls row without eliding or squeezing
     // (measured, org.kde.desktop at the 18px grid unit: Work/Break/Large
@@ -309,6 +329,7 @@ Item {
     // pinned behaviorally by tests/tst_full.qml (presetEditRowN implicitWidth
     // ≤ width), not by this arithmetic.
     implicitWidth: Kirigami.Units.gridUnit * 21
+
     // ONE frame for both pages: the column's height is dominated by whichever
     // page is naturally taller (the settings page — the main page is pure
     // content since round 6: fixed-height cells, no flex absorber), and both
@@ -334,634 +355,692 @@ Item {
         }
         spacing: Kirigami.Units.smallSpacing
 
-        // --------------------------------------------- header: status + gear
-        // One shared header row for both pages: status on the left, settings
-        // gear pinned top right (subtly checked while the settings page shows).
-        RowLayout {
-            Layout.fillWidth: true
-            spacing: Kirigami.Units.smallSpacing
-
-            Kirigami.Heading {
-                level: 4
+            // --------------------------------------------- header: status + gear
+            // One shared header row for both pages: status on the left, settings
+            // gear pinned top right (subtly checked while the settings page shows).
+            RowLayout {
                 Layout.fillWidth: true
-                text: full.statusText()
-            }
-
-            QQC2.ToolButton {
-                id: settingsGear
-
-                objectName: "settingsGear"
-                icon.name: "settings"
-                // Bound, not checkable: a checkable button assigns `checked`
-                // internally on click, which would stomp this binding and let
-                // the visual state drift from the open page.
-                checked: full.settingsOpen
-                onClicked: full.settingsOpen = !full.settingsOpen
-
-                // Attached form, positioned by Qt's tooltip positioner OUTSIDE
-                // the hovered control, with a delay so crossing the header does
-                // not spawn/hide a popup at every pass.
-                // qmllint disable unqualified
-                QQC2.ToolTip.visible: settingsGear.hovered
-                QQC2.ToolTip.text: i18n("Settings")
-                QQC2.ToolTip.delay: Kirigami.Units.longDuration
-                // qmllint enable unqualified
-            }
-        }
-
-        Kirigami.Separator {
-            Layout.fillWidth: true
-        }
-
-        // ------------------------------------------------------------- pages
-        // Both pages live here for their whole life. The inactive one is faded
-        // out (opacity 0) and input-disabled — never visible:false, which would
-        // exclude it from the layout and let the frame re-height. The frame is
-        // exactly the taller page's implicitHeight. Round 6: the MAIN page is
-        // pure content — fixed-height grid cells and the pinned action strip,
-        // nothing flexes — so whatever the settings-page-sized frame leaves
-        // free below the strip stays empty; there is no absorber to balloon
-        // the tiles and no control can land outside the frame.
-        Item {
-            id: pageHost
-
-            objectName: "pageHost"
-            Layout.fillWidth: true
-            implicitHeight: Math.max(mainPage.implicitHeight, settingsPage.implicitHeight)
-
-            // ------------------------------------------------------------ MAIN page
-
-            ColumnLayout {
-                id: mainPage
-
-                objectName: "mainPage"
-                anchors.fill: parent
-                opacity: full.settingsOpen ? 0 : 1
-                enabled: !full.settingsOpen
                 spacing: Kirigami.Units.smallSpacing
 
-                // ------------------------------------------------ preset grid
-
-                GridLayout {
-                    id: grid
-                    objectName: "presetGrid"
+                Kirigami.Heading {
+                    level: 4
                     Layout.fillWidth: true
-                    // Round 6: NO flex. The old fillHeight absorber turned
-                    // every spare frame pixel into equally taller tiles until
-                    // the giant squares covered the action buttons in the real
-                    // shell. Cells keep ONE fixed height (full.cellHeight);
-                    // the main page is pure content and spare frame height
-                    // simply stays empty below the strip.
-                    Layout.fillHeight: false
-                    columns: 3
-                    columnSpacing: full.cellGap
-                    rowSpacing: full.cellGap
+                    text: full.statusText()
+                }
 
-                    Repeater {
-                        id: cellRepeater
+                QQC2.ToolButton {
+                    id: settingsGear
 
-                        // Always six cells, in every machine phase: while timing
-                        // the cells disable, they never vanish.
-                        model: 6
+                    objectName: "settingsGear"
+                    icon.name: "settings"
+                    // Bound, not checkable: a checkable button assigns `checked`
+                    // internally on click, which would stomp this binding and let
+                    // the visual state drift from the open page.
+                    checked: full.settingsOpen
+                    onClicked: full.settingsOpen = !full.settingsOpen
 
-                        // Wrapper item: disabled controls receive no hover, so
-                        // the dash's guidance tooltip lives on the (still
-                        // enabled) wrapper. The button fills the wrapper, so
-                        // the whole cell is one flat click/hover target —
-                        // nothing between the mouse and the Button state.
-                        Item {
-                            id: cellWrap
+                    // Attached form, positioned by Qt's tooltip positioner OUTSIDE
+                    // the hovered control, with a delay so crossing the header does
+                    // not spawn/hide a popup at every pass.
+                    // qmllint disable unqualified
+                    QQC2.ToolTip.visible: settingsGear.hovered
+                    QQC2.ToolTip.text: i18n("Settings")
+                    QQC2.ToolTip.delay: Kirigami.Units.longDuration
+                    // qmllint enable unqualified
+                }
+            }
 
-                            required property int index
+            Kirigami.Separator {
+                Layout.fillWidth: true
+            }
 
-                            objectName: "presetCellWrap" + index
-                            Layout.fillWidth: true
-                            // Equal explicit size from ONE source: width thirds
-                            // of the grid (full.cellWidth), height the FIXED
-                            // full.cellHeight — identical for all six cells,
-                            // independent of label content, never flexed (the
-                            // round-5 fillHeight ballooned the tiles over the
-                            // action buttons in the real shell).
-                            Layout.preferredWidth: full.cellWidth
-                            Layout.preferredHeight: full.cellHeight
-                            implicitWidth: full.cellWidth
-                            implicitHeight: full.cellHeight
+            // ------------------------------------------------------------- pages
+            // Both pages live here for their whole life. The inactive one is faded
+            // out (opacity 0) and input-disabled — never visible:false, which would
+            // exclude it from the layout and let the frame re-height. The frame is
+            // exactly the taller page's implicitHeight. Round 6: the MAIN page is
+            // pure content — fixed-height grid cells and the pinned action strip,
+            // nothing flexes — so whatever the settings-page-sized frame leaves
+            // free below the strip stays empty; there is no absorber to balloon
+            // the tiles and no control can land outside the frame.
+            Item {
+                id: pageHost
 
-                            PlasmaComponents.Button {
-                                id: cellBtn
+                objectName: "pageHost"
+                Layout.fillWidth: true
+                implicitHeight: Math.max(mainPage.implicitHeight, settingsPage.implicitHeight)
 
-                                objectName: "presetCell" + cellWrap.index
-                                anchors.fill: parent
-                                font.pointSize: full.presetFontSize
-                                enabled: full.slots[cellWrap.index] !== null && !full.timing
-                                text: full.slotText(cellWrap.index)
-                                onClicked: full.slotClicked(cellWrap.index)
-                            }
+                // ------------------------------------------------------------ MAIN page
 
-                            HoverHandler {
-                                id: cellHover
-                            }
+                ColumnLayout {
+                    id: mainPage
 
-                            // Only the EMPTY-slot dash keeps a tooltip (guidance:
-                            // creation lives in settings), hosted by the wrapper
-                            // because the disabled button never hovers. Placed
-                            // explicitly ABOVE the cell so its geometry can
-                            // never intersect the pointer and flap the hover
-                            // state, with a delay against crossing churn.
-                            QQC2.ToolTip {
-                                visible: cellHover.hovered && full.slots[cellWrap.index] === null
-                                x: (cellWrap.width - width) / 2
-                                y: -height - Kirigami.Units.smallSpacing
-                                delay: Kirigami.Units.longDuration
-                                text: full.cellToolTip(cellWrap.index)
+                    objectName: "mainPage"
+                    anchors.fill: parent
+                    opacity: full.settingsOpen ? 0 : 1
+                    enabled: !full.settingsOpen
+                    spacing: Kirigami.Units.smallSpacing
+
+                    // ------------------------------------------------ preset grid
+
+                    GridLayout {
+                        id: grid
+                        objectName: "presetGrid"
+                        Layout.fillWidth: true
+                        // Round 6: NO flex. The old fillHeight absorber turned
+                        // every spare frame pixel into equally taller tiles until
+                        // the giant squares covered the action buttons in the real
+                        // shell. Cells keep ONE fixed height (full.cellHeight);
+                        // the main page is pure content and spare frame height
+                        // simply stays empty below the strip.
+                        Layout.fillHeight: false
+                        columns: 3
+                        columnSpacing: full.cellGap
+                        rowSpacing: full.cellGap
+
+                        Repeater {
+                            id: cellRepeater
+
+                            // Always six cells, in every machine phase: while timing
+                            // the cells disable, they never vanish.
+                            model: 6
+
+                            // Wrapper item: disabled controls receive no hover, so
+                            // the dash's guidance tooltip lives on the (still
+                            // enabled) wrapper. The button fills the wrapper, so
+                            // the whole cell is one flat click/hover target —
+                            // nothing between the mouse and the Button state.
+                            Item {
+                                id: cellWrap
+
+                                required property int index
+
+                                objectName: "presetCellWrap" + index
+                                Layout.fillWidth: true
+                                // Equal explicit size from ONE source: width thirds
+                                // of the grid (full.cellWidth), height the FIXED
+                                // full.cellHeight — identical for all six cells,
+                                // independent of label content, never flexed (the
+                                // round-5 fillHeight ballooned the tiles over the
+                                // action buttons in the real shell).
+                                Layout.preferredWidth: full.cellWidth
+                                Layout.preferredHeight: full.cellHeight
+                                implicitWidth: full.cellWidth
+                                implicitHeight: full.cellHeight
+
+                                PlasmaComponents.Button {
+                                    id: cellBtn
+
+                                    objectName: "presetCell" + cellWrap.index
+                                    anchors.fill: parent
+                                    font.pointSize: full.presetFontSize
+                                    enabled: full.slots[cellWrap.index] !== null && !full.timing
+                                    text: full.slotText(cellWrap.index)
+                                    onClicked: full.slotClicked(cellWrap.index)
+                                }
+
+                                HoverHandler {
+                                    id: cellHover
+                                }
+
+                                // Only the EMPTY-slot dash keeps a tooltip (guidance:
+                                // creation lives in settings), hosted by the wrapper
+                                // because the disabled button never hovers. Placed
+                                // explicitly ABOVE the cell so its geometry can
+                                // never intersect the pointer and flap the hover
+                                // state, with a delay against crossing churn.
+                                QQC2.ToolTip {
+                                    visible: cellHover.hovered && full.slots[cellWrap.index] === null
+                                    x: (cellWrap.width - width) / 2
+                                    y: -height - Kirigami.Units.smallSpacing
+                                    delay: Kirigami.Units.longDuration
+                                    text: full.cellToolTip(cellWrap.index)
+                                }
                             }
                         }
                     }
-                }
 
-                Kirigami.Separator {
-                    Layout.fillWidth: true
-                }
+                    Kirigami.Separator {
+                        Layout.fillWidth: true
+                    }
 
-                // ------------------------------------------------ running actions
-                // RESERVED strip: all three action buttons are ALWAYS laid out;
-                // phase-dependent visibility is expressed as opacity + enabled
-                // (the same swap pattern as the pages). The main page's
-                // implicitHeight therefore cannot change when a block starts or
-                // ends, the card frame (derived from these implicitHeights)
-                // stays constant under any real-shell metrics, and the buttons
-                // are pinned INSIDE the visible frame — they can never be
-                // clipped away below it.
-                //
-                // Round 5 (operator: "shrink all of them: one compact row,
-                // Disable for now as small secondary"): "Start break now" and
-                // "Delay 5 min" sit at natural width in one row; Enable/Disable
-                // is the SMALL secondary beneath it (smallFont, no fillWidth).
-                // Three natural-width buttons in one row would overflow even
-                // the round-6 21-grid-unit card (measured 122+99+126 px of
-                // implicit width + 2×4px spacing = 355px vs 351px of content
-                // width), hence the second line. The strip keeps ONE constant
-                // height in every phase.
-                ColumnLayout {
-                    id: actionStrip
-                    objectName: "actionStrip"
-                    Layout.fillWidth: true
-                    spacing: Kirigami.Units.smallSpacing
-
-                    // Round 7 (operator): Start break now and the Enable/
-                    // Disable secondary are the SAME SIZE — one shared width
-                    // (the max of both buttons' naturals, so neither label
-                    // elides); Delay 5 min stays natural in its own row.
-                    readonly property real sharedButtonWidth: Math.max(
-                        startBreakNowButton.implicitWidth,
-                        enableButton.implicitWidth)
-
-                    RowLayout {
+                    // ------------------------------------------------ running actions
+                    // RESERVED strip: all three action buttons are ALWAYS laid out;
+                    // phase-dependent visibility is expressed as opacity + enabled
+                    // (the same swap pattern as the pages). The main page's
+                    // implicitHeight therefore cannot change when a block starts or
+                    // ends, the card frame (derived from these implicitHeights)
+                    // stays constant under any real-shell metrics, and the buttons
+                    // are pinned INSIDE the visible frame — they can never be
+                    // clipped away below it.
+                    //
+                    // Round 5 (operator: "shrink all of them: one compact row,
+                    // Disable for now as small secondary"): "Start break now" and
+                    // "Delay 5 min" sit at natural width in one row; Enable/Disable
+                    // is the SMALL secondary beneath it (smallFont, no fillWidth).
+                    // Three natural-width buttons in one row would overflow even
+                    // the round-6 21-grid-unit card (measured 122+99+126 px of
+                    // implicit width + 2×4px spacing = 355px vs 351px of content
+                    // width), hence the second line. The strip keeps ONE constant
+                    // height in every phase.
+                    ColumnLayout {
+                        id: actionStrip
+                        objectName: "actionStrip"
+                        Layout.fillWidth: true
                         spacing: Kirigami.Units.smallSpacing
-                        Layout.fillWidth: true
 
-                        PlasmaComponents.Button {
-                            id: startBreakNowButton
+                        // Round 7 (operator): Start break now and the Enable/
+                        // Disable secondary are the SAME SIZE — one shared width
+                        // (the max of both buttons' naturals, so neither label
+                        // elides); Delay 5 min stays natural in its own row.
+                        readonly property real sharedButtonWidth: Math.max(
+                            startBreakNowButton.implicitWidth,
+                            enableButton.implicitWidth)
 
-                            objectName: "startBreakNowButton"
-                            Layout.preferredWidth: actionStrip.sharedButtonWidth
-                            visible: true
-                            opacity: full.working ? 1 : 0
-                            enabled: full.working
-                            icon.name: "go-next-skip"
-                            // qmllint disable unqualified
-                            text: i18n("Start break now")
-                            // qmllint enable unqualified
-                            onClicked: {
-                                full.ctrl.closePopup();
-                                full.ctrl.startBreakNow();
-                            }
-                        }
-
-                        PlasmaComponents.Button {
-                            id: delayBreakButton
-
-                            objectName: "delayBreakButton"
-                            visible: true
-                            opacity: full.working && full.ctrl.pendingBreak ? 1 : 0
-                            enabled: full.working && full.ctrl.pendingBreak
-                            icon.name: "clock"
-                            // Shortened per operator: the full "Delay break 5
-                            // minutes" text would overflow the natural-width row.
-                            // qmllint disable unqualified
-                            text: i18n("Delay 5 min")
-                            // qmllint enable unqualified
-                            onClicked: full.ctrl.delayBreak()
-                        }
-                    }
-
-                    // Small secondary: matches Start break now's size AND font
-                    // (shared width above, default font) — subordination comes
-                    // only from position (row below). Round 7b operator order.
-                    PlasmaComponents.Button {
-                        id: enableButton
-
-                        objectName: "enableButton"
-                        Layout.preferredWidth: actionStrip.sharedButtonWidth
-                        icon.name: full.phase === "disabled" ? "checkmark" : "dialog-cancel"
-                        // qmllint disable unqualified
-                        text: full.phase === "disabled" ? i18n("Enable") : i18n("Disable for now")
-                        // qmllint enable unqualified
-                        onClicked: full.phase === "disabled" ? full.ctrl.enable() : full.ctrl.disable()
-                    }
-                }
-            }
-
-            // -------------------------------------------------------- SETTINGS page
-
-            // Sits on top of the main page (declared later → higher z) and is
-            // faded out while closed. Its natural height defines the frame, so
-            // everything on it holds a constant geometry: one-line uniform
-            // user-slot rows and ONE always-reserved warning line never
-            // re-height it.
-            ColumnLayout {
-                id: settingsPage
-
-                objectName: "settingsPage"
-                anchors {
-                    left: parent.left
-                    right: parent.right
-                    top: parent.top
-                }
-                opacity: full.settingsOpen ? 1 : 0
-                enabled: full.settingsOpen
-                spacing: Kirigami.Units.smallSpacing
-
-                // Collision registry: row -> its live edited fields currently
-                // exactly match a Built-in. Rows report through their
-                // onWouldCollideChanged handlers (see delegate).
-                property var _collisions: ({})
-
-                function reportCollision(row, on) {
-                    if ((_collisions[row] === true) === on)
-                        return;
-                    let next = Object.assign({}, _collisions);
-                    if (on)
-                        next[row] = true;
-                    else
-                        delete next[row];
-                    _collisions = next;
-                }
-
-                // True while any user row's live minutes exactly match a
-                // Built-in; drives the single reserved warning line below.
-                readonly property bool hasCollision: {
-                    for (let i = 0; i < 3; i++)
-                        if (_collisions[i] === true)
-                            return true;
-                    return false;
-                }
-
-                // Default Preset: any of the six slots may carry the star.
-                GridLayout {
-                    objectName: "starPicker"
-                    Layout.fillWidth: true
-                    columns: 3
-                    columnSpacing: Kirigami.Units.smallSpacing
-                    rowSpacing: Kirigami.Units.smallSpacing
-
-                    Repeater {
-                        model: 6
-
-                        PlasmaComponents.Button {
-                            id: defaultCell
-
-                            required property int index
-
+                        RowLayout {
+                            spacing: Kirigami.Units.smallSpacing
                             Layout.fillWidth: true
-                            // Bound, not checkable — a checkable button would assign
-                            // `checked` internally and break this binding, leaving a
-                            // phantom star when the Default Preset moves again.
-                            checked: defaultCell.index === full.defaultPreset
-                            enabled: full.slots[defaultCell.index] !== null
-                            text: full.slots[defaultCell.index]
-                                  ? full.slots[defaultCell.index].label
-                                  // qmllint disable unqualified
-                                  : i18n("—")
-                            // qmllint enable unqualified
-                            onClicked: full.setDefaultPreset(defaultCell.index)
 
-                            // Attached form: outside-the-control placement +
-                            // delay, no popup churn while crossing the picker.
-                            // qmllint disable unqualified
-                            QQC2.ToolTip.visible: defaultCell.hovered
-                            QQC2.ToolTip.text: i18n("Set as default")
-                            QQC2.ToolTip.delay: Kirigami.Units.longDuration
-                            // qmllint enable unqualified
-                        }
-                    }
-                }
+                            PlasmaComponents.Button {
+                                id: startBreakNowButton
 
-                Kirigami.Separator {
-                    Layout.fillWidth: true
-                }
-
-                // User preset rows: ONE compact uniform LINE per user slot 3-5,
-                // always present. OCCUPIED → the one-line editor [Work][spin]
-                // [Break][spin][Large][spin][delete] (there is NO name field —
-                // the label derives from the minutes); EMPTY → a single
-                // full-width "Add preset" button that creates the preset in
-                // THIS slot (creation lives in settings; editing then happens
-                // in place). The row swaps editor/button by OPACITY + ENABLED
-                // on the always-laid-out editor column — with ONE exception:
-                // the Add button below flips `visible`, which is layout-safe
-                // because it is ANCHORED to the row Item, not a layout child,
-                // so its visibility cannot re-height anything — so every row
-                // keeps ONE constant height and adding or deleting a preset
-                // can never re-height the page or the card. Round 6 (operator):
-                // the editor is ONE line — the
-                // old two-line editor reserved the Large row's height in EVERY
-                // row even when empty, tripling the Add-preset rows' bulk and
-                // inflating the very page that sizes the card frame. The
-                // dedicated tight container groups the three rows together;
-                // the per-row warning labels remain consolidated into the ONE
-                // always-reserved line below the group.
-                //
-                // The editor commits immediately on every change (Built-ins
-                // intentionally have no editor here). The model is the STABLE
-                // slot indices 3-5, not the occupied-slot list: every live edit
-                // echoes back through the config and recomputes `slots`; a
-                // derived array model there would rebuild all rows on each
-                // echo, dropping focus mid-interaction.
-                ColumnLayout {
-                    objectName: "userRowsGroup"
-                    Layout.fillWidth: true
-                    spacing: Kirigami.Units.smallSpacing
-
-                    Repeater {
-                        id: userEditors
-
-                        objectName: "userEditors"
-                        model: 3
-
-                        Item {
-                            id: userRow
-
-                            required property int modelData
-                            readonly property int slotIdx: userRow.userSlotBase + userRow.modelData
-                            readonly property int userSlotBase: 3
-                            readonly property var slot: full.slots[userRow.slotIdx]
-                            readonly property bool occupied: userRow.slot !== null
-
-                            // Live warning condition: the edited MINUTES
-                            // currently exactly match a Built-in (that edit
-                            // would be refused on commit). With derived naming
-                            // the label is implied by the minutes, so the
-                            // composed check is minutes-only.
-                            property bool wouldCollide: occupied && !full.matchesBuiltin(slot)
-                                && full.matchesBuiltin({
-                                    label: Machine.derivedLabel(workSpin.value, breakSpin.value),
-                                    workMin: workSpin.value,
-                                    breakMin: breakSpin.value
-                                });
-
-                            // Report into the settings page's collision registry
-                            // (explicit handler, not a cross-delegate binding read:
-                            // the aggregation must be reliably reactive).
-                            onWouldCollideChanged: settingsPage.reportCollision(userRow.modelData, userRow.wouldCollide)
-                            Component.onCompleted: settingsPage.reportCollision(userRow.modelData, userRow.wouldCollide)
-
-                            function commit() {
-                                if (userRow.occupied)
-                                    full.updateUserPreset(userRow.slotIdx, workSpin.value, breakSpin.value, largeSpin.value);
-                            }
-
-                            Layout.fillWidth: true
-                            // CONSTANT row height: the editor column always stays in
-                            // the layout (opacity-toggled below), so this never
-                            // depends on the slot's occupancy or warning state.
-                            implicitHeight: editorColumn.implicitHeight
-
-                            ColumnLayout {
-                                id: editorColumn
-
-                                objectName: "userEditorColumn" + userRow.modelData
-                                anchors {
-                                    left: parent.left
-                                    right: parent.right
-                                    top: parent.top
-                                }
-                                opacity: userRow.occupied ? 1 : 0
-                                enabled: userRow.occupied
-                                spacing: Kirigami.Units.smallSpacing
-
-                                // ONE line, round 6: labels are smallFont;
-                                // the spins shrink 4.5 → 3.5 grid units (63px:
-                                // the widest legal value "600" needs ~21px of
-                                // text against 63 − 2×16px indicators, probed
-                                // TEXTCLIP=false). Row height is the one
-                                // control line, occupied or not.
-                                RowLayout {
-                                    objectName: "presetEditRow" + userRow.modelData
-                                    spacing: Kirigami.Units.smallSpacing
-                                    Layout.fillWidth: true
-
-                                    QQC2.Label {
-                                        font: Kirigami.Theme.smallFont
-                                        // qmllint disable unqualified
-                                        text: i18n("Work")
-                                        // qmllint enable unqualified
-                                    }
-                                    QQC2.SpinBox {
-                                        id: workSpin
-
-                                        objectName: "workSpin" + userRow.modelData
-                                        Layout.preferredWidth: Kirigami.Units.gridUnit * 3.5
-                                        from: 1
-                                        to: 600
-                                        editable: true
-                                        value: userRow.slot ? userRow.slot.workMin : 25
-                                        onValueModified: userRow.commit()
-                                    }
-                                    QQC2.Label {
-                                        font: Kirigami.Theme.smallFont
-                                        // qmllint disable unqualified
-                                        text: i18n("Break")
-                                        // qmllint enable unqualified
-                                    }
-                                    QQC2.SpinBox {
-                                        id: breakSpin
-
-                                        objectName: "breakSpin" + userRow.modelData
-                                        Layout.preferredWidth: Kirigami.Units.gridUnit * 3.5
-                                        from: 1
-                                        to: 600
-                                        editable: true
-                                        value: userRow.slot ? userRow.slot.breakMin : 5
-                                        onValueModified: userRow.commit()
-                                    }
-                                    QQC2.Label {
-                                        font: Kirigami.Theme.smallFont
-                                        // qmllint disable unqualified
-                                        text: i18n("Large")
-                                        // qmllint enable unqualified
-                                    }
-                                    QQC2.SpinBox {
-                                        id: largeSpin
-
-                                        objectName: "largeSpin" + userRow.modelData
-                                        Layout.preferredWidth: Kirigami.Units.gridUnit * 3.5
-                                        from: 0
-                                        to: 600
-                                        editable: true
-                                        // 0 = the automatic rule; a stored entry
-                                        // without largeBreakMin shows 0.
-                                        value: userRow.slot && userRow.slot.largeBreakMin > 0
-                                               ? userRow.slot.largeBreakMin : 0
-                                        onValueModified: userRow.commit()
-                                    }
-                                    Item {
-                                        Layout.fillWidth: true
-                                    }
-                                    QQC2.ToolButton {
-                                        id: deleteButton
-
-                                        objectName: "deleteButton" + userRow.modelData
-                                        icon.name: "edit-delete-remove"
-                                        onClicked: full.deleteUserPreset(userRow.slotIdx)
-                                        // qmllint disable unqualified
-                                        QQC2.ToolTip.visible: deleteButton.hovered
-                                        QQC2.ToolTip.text: i18n("Delete preset")
-                                        QQC2.ToolTip.delay: Kirigami.Units.longDuration
-                                        // qmllint enable unqualified
-                                    }
+                                objectName: "startBreakNowButton"
+                                Layout.preferredWidth: actionStrip.sharedButtonWidth
+                                visible: true
+                                opacity: full.working ? 1 : 0
+                                enabled: full.working && full.ctrl.paused !== true
+                                icon.name: "go-next-skip"
+                                // qmllint disable unqualified
+                                text: i18n("Start break now")
+                                // qmllint enable unqualified
+                                onClicked: {
+                                    full.ctrl.closePopup();
+                                    full.ctrl.startBreakNow();
                                 }
                             }
 
                             PlasmaComponents.Button {
-                                id: addButton
+                                id: delayBreakButton
 
-                                objectName: "addPresetButton" + userRow.modelData
-                                anchors {
-                                    left: parent.left
-                                    right: parent.right
-                                    verticalCenter: parent.verticalCenter
-                                }
-                                visible: !userRow.occupied
-                                icon.name: "list-add"
+                                objectName: "delayBreakButton"
+                                visible: true
+                                opacity: full.working && full.ctrl.pendingBreak ? 1 : 0
+                                enabled: full.working && full.ctrl.pendingBreak && full.ctrl.paused !== true
+                                icon.name: "clock"
+                                // Shortened per operator: the full "Delay break 5
+                                // minutes" text would overflow the natural-width row.
                                 // qmllint disable unqualified
-                                text: i18n("Add preset")
+                                text: i18n("Delay 5 min")
                                 // qmllint enable unqualified
-                                onClicked: full.addUserPresetAt(userRow.slotIdx)
+                                onClicked: full.ctrl.delayBreak()
                             }
+                        }
+
+                        // Small secondary: matches Start break now's size AND font
+                        // (shared width above, default font) — subordination comes
+                        // only from position (row below). Round 7b operator order.
+                        PlasmaComponents.Button {
+                            id: enableButton
+
+                            objectName: "enableButton"
+                            Layout.preferredWidth: actionStrip.sharedButtonWidth
+                            icon.name: full.phase === "disabled" ? "checkmark" : "dialog-cancel"
+                            // qmllint disable unqualified
+                            text: full.phase === "disabled" ? i18n("Enable") : i18n("Disable for now")
+                            // qmllint enable unqualified
+                            onClicked: full.phase === "disabled" ? full.ctrl.enable() : full.ctrl.disable()
                         }
                     }
                 }
 
-                // Automatic-rule hint for the Large spinboxes above: one small,
-                // low-opacity, ALWAYS-laid-out line (never visible:false).
-                // Round 6 clip fix: it WRAPS, and a wrapped label's implicit
-                // height is width-dependent and late-settling — the mechanism
-                // behind the real shell's bottom clip — so the height is
-                // RESERVED for the measured 2-line wrap instead (see the
-                // reservedHintHeight comment at the card root).
-                QQC2.Label {
-                    id: largeBreakHint
+                // -------------------------------------------------------- SETTINGS page
 
-                    objectName: "largeBreakHint"
-                    Layout.fillWidth: true
-                    Layout.minimumHeight: full.reservedHintHeight(largeBreakHint)
-                    Layout.maximumHeight: full.reservedHintHeight(largeBreakHint)
-                    Layout.preferredHeight: full.reservedHintHeight(largeBreakHint)
-                    wrapMode: Text.WordWrap
-                    font: Kirigami.Theme.smallFont
-                    opacity: 0.7
-                    // qmllint disable unqualified
-                    text: i18n("Large break 0 = automatic rule: 20 / 30 / 40 min by break length.")
-                    // qmllint enable unqualified
-                }
+                // Sits on top of the main page (declared later → higher z) and is
+                // faded out while closed. Its natural height defines the frame, so
+                // everything on it holds a constant geometry: one-line uniform
+                // user-slot rows and ONE always-reserved warning line never
+                // re-height it.
+                ColumnLayout {
+                    id: settingsPage
 
-                // ONE collision warning for the whole settings page. The line is
-                // ALWAYS laid out at exactly one line height (no wrap — it
-                // elides), so its height is constant whether or not a collision
-                // is active: editing a preset toward a Built-in duplicate
-                // cannot re-height the page or the card. This is the
-                // consolidated keeper of the round-3 per-row reserved warning
-                // lines.
-                QQC2.Label {
-                    id: builtinCollisionWarning
-
-                    objectName: "builtinCollisionWarning"
-                    Layout.fillWidth: true
-                    opacity: settingsPage.hasCollision ? 1 : 0
-                    elide: Text.ElideRight
-                    color: Kirigami.Theme.neutralTextColor
-                    font: Kirigami.Theme.smallFont
-                    // Static text: with derived naming a preset's identity is
-                    // its minutes, so the message no longer names an entry.
-                    // qmllint disable unqualified
-                    text: i18n("Can't be identical to a Built-in — change the minutes.")
-                    // qmllint enable unqualified
-                }
-
-                Kirigami.Separator {
-                    Layout.fillWidth: true
-                }
-
-                // Desk Reminder: on/off + interval, effective from the next Work Block.
-                RowLayout {
-                    objectName: "deskControls"
+                    objectName: "settingsPage"
+                    anchors {
+                        left: parent.left
+                        right: parent.right
+                        top: parent.top
+                    }
+                    opacity: full.settingsOpen ? 1 : 0
+                    enabled: full.settingsOpen
                     spacing: Kirigami.Units.smallSpacing
 
-                    QQC2.Label {
-                        id: deskReminderLabel
+                    // Collision registry: row -> its live edited fields currently
+                    // exactly match a Built-in. Rows report through their
+                    // onWouldCollideChanged handlers (see delegate).
+                    property var _collisions: ({})
 
-                        objectName: "deskReminderLabel"
+                    function reportCollision(row, on) {
+                        if ((_collisions[row] === true) === on)
+                            return;
+                        let next = Object.assign({}, _collisions);
+                        if (on)
+                            next[row] = true;
+                        else
+                            delete next[row];
+                        _collisions = next;
+                    }
+
+                    // True while any user row's live minutes exactly match a
+                    // Built-in; drives the single reserved warning line below.
+                    readonly property bool hasCollision: {
+                        for (let i = 0; i < 3; i++)
+                            if (_collisions[i] === true)
+                                return true;
+                        return false;
+                    }
+
+                    // Default Preset: any of the six slots may carry the star.
+                    GridLayout {
+                        objectName: "starPicker"
                         Layout.fillWidth: true
-                        // The fillWidth element between fixed-width controls:
-                        // elide, never clip or stretch the row.
-                        elide: Text.ElideRight
+                        columns: 3
+                        columnSpacing: Kirigami.Units.smallSpacing
+                        rowSpacing: Kirigami.Units.smallSpacing
+
+                        Repeater {
+                            model: 6
+
+                            PlasmaComponents.Button {
+                                id: defaultCell
+
+                                required property int index
+
+                                Layout.fillWidth: true
+                                // Bound, not checkable — a checkable button would assign
+                                // `checked` internally and break this binding, leaving a
+                                // phantom star when the Default Preset moves again.
+                                checked: defaultCell.index === full.defaultPreset
+                                enabled: full.slots[defaultCell.index] !== null
+                                text: full.slots[defaultCell.index]
+                                      ? full.slots[defaultCell.index].label
+                                      // qmllint disable unqualified
+                                      : i18n("—")
+                                // qmllint enable unqualified
+                                onClicked: full.setDefaultPreset(defaultCell.index)
+
+                                // Attached form: outside-the-control placement +
+                                // delay, no popup churn while crossing the picker.
+                                // qmllint disable unqualified
+                                QQC2.ToolTip.visible: defaultCell.hovered
+                                QQC2.ToolTip.text: i18n("Set as default")
+                                QQC2.ToolTip.delay: Kirigami.Units.longDuration
+                                // qmllint enable unqualified
+                            }
+                        }
+                    }
+
+                    Kirigami.Separator {
+                        Layout.fillWidth: true
+                    }
+
+                    // User preset rows: ONE compact uniform LINE per user slot 3-5,
+                    // always present. OCCUPIED → the one-line editor [Work][spin]
+                    // [Break][spin][Large][spin][delete] (there is NO name field —
+                    // the label derives from the minutes); EMPTY → a single
+                    // full-width "Add preset" button that creates the preset in
+                    // THIS slot (creation lives in settings; editing then happens
+                    // in place). The row swaps editor/button by OPACITY + ENABLED
+                    // on the always-laid-out editor column — with ONE exception:
+                    // the Add button below flips `visible`, which is layout-safe
+                    // because it is ANCHORED to the row Item, not a layout child,
+                    // so its visibility cannot re-height anything — so every row
+                    // keeps ONE constant height and adding or deleting a preset
+                    // can never re-height the page or the card. Round 6 (operator):
+                    // the editor is ONE line — the
+                    // old two-line editor reserved the Large row's height in EVERY
+                    // row even when empty, tripling the Add-preset rows' bulk and
+                    // inflating the very page that sizes the card frame. The
+                    // dedicated tight container groups the three rows together;
+                    // the per-row warning labels remain consolidated into the ONE
+                    // always-reserved line below the group.
+                    //
+                    // The editor commits immediately on every change (Built-ins
+                    // intentionally have no editor here). The model is the STABLE
+                    // slot indices 3-5, not the occupied-slot list: every live edit
+                    // echoes back through the config and recomputes `slots`; a
+                    // derived array model there would rebuild all rows on each
+                    // echo, dropping focus mid-interaction.
+                    ColumnLayout {
+                        objectName: "userRowsGroup"
+                        Layout.fillWidth: true
+                        spacing: Kirigami.Units.smallSpacing
+
+                        Repeater {
+                            id: userEditors
+
+                            objectName: "userEditors"
+                            model: 3
+
+                            Item {
+                                id: userRow
+
+                                required property int modelData
+                                readonly property int slotIdx: userRow.userSlotBase + userRow.modelData
+                                readonly property int userSlotBase: 3
+                                readonly property var slot: full.slots[userRow.slotIdx]
+                                readonly property bool occupied: userRow.slot !== null
+
+                                // Live warning condition: the edited MINUTES
+                                // currently exactly match a Built-in (that edit
+                                // would be refused on commit). With derived naming
+                                // the label is implied by the minutes, so the
+                                // composed check is minutes-only.
+                                property bool wouldCollide: occupied && !full.matchesBuiltin(slot)
+                                    && full.matchesBuiltin({
+                                        label: Machine.derivedLabel(workSpin.value, breakSpin.value),
+                                        workMin: workSpin.value,
+                                        breakMin: breakSpin.value
+                                    });
+
+                                // Report into the settings page's collision registry
+                                // (explicit handler, not a cross-delegate binding read:
+                                // the aggregation must be reliably reactive).
+                                onWouldCollideChanged: settingsPage.reportCollision(userRow.modelData, userRow.wouldCollide)
+                                Component.onCompleted: settingsPage.reportCollision(userRow.modelData, userRow.wouldCollide)
+
+                                function commit() {
+                                    if (userRow.occupied)
+                                        full.updateUserPreset(userRow.slotIdx, workSpin.value, breakSpin.value, largeSpin.value);
+                                }
+
+                                Layout.fillWidth: true
+                                // CONSTANT row height: the editor column always stays in
+                                // the layout (opacity-toggled below), so this never
+                                // depends on the slot's occupancy or warning state.
+                                implicitHeight: editorColumn.implicitHeight
+
+                                ColumnLayout {
+                                    id: editorColumn
+
+                                    objectName: "userEditorColumn" + userRow.modelData
+                                    anchors {
+                                        left: parent.left
+                                        right: parent.right
+                                        top: parent.top
+                                    }
+                                    opacity: userRow.occupied ? 1 : 0
+                                    enabled: userRow.occupied
+                                    spacing: Kirigami.Units.smallSpacing
+
+                                    // ONE line, round 6: labels are smallFont;
+                                    // the spins shrink 4.5 → 3.5 grid units (63px:
+                                    // the widest legal value "600" needs ~21px of
+                                    // text against 63 − 2×16px indicators, probed
+                                    // TEXTCLIP=false). Row height is the one
+                                    // control line, occupied or not.
+                                    RowLayout {
+                                        objectName: "presetEditRow" + userRow.modelData
+                                        spacing: Kirigami.Units.smallSpacing
+                                        Layout.fillWidth: true
+
+                                        QQC2.Label {
+                                            font: Kirigami.Theme.smallFont
+                                            // qmllint disable unqualified
+                                            text: i18n("Work")
+                                            // qmllint enable unqualified
+                                        }
+                                        QQC2.SpinBox {
+                                            id: workSpin
+
+                                            objectName: "workSpin" + userRow.modelData
+                                            Layout.preferredWidth: Kirigami.Units.gridUnit * 3.5
+                                            from: 1
+                                            to: 600
+                                            editable: true
+                                            value: userRow.slot ? userRow.slot.workMin : 25
+                                            onValueModified: userRow.commit()
+                                        }
+                                        QQC2.Label {
+                                            font: Kirigami.Theme.smallFont
+                                            // qmllint disable unqualified
+                                            text: i18n("Break")
+                                            // qmllint enable unqualified
+                                        }
+                                        QQC2.SpinBox {
+                                            id: breakSpin
+
+                                            objectName: "breakSpin" + userRow.modelData
+                                            Layout.preferredWidth: Kirigami.Units.gridUnit * 3.5
+                                            from: 1
+                                            to: 600
+                                            editable: true
+                                            value: userRow.slot ? userRow.slot.breakMin : 5
+                                            onValueModified: userRow.commit()
+                                        }
+                                        QQC2.Label {
+                                            font: Kirigami.Theme.smallFont
+                                            // qmllint disable unqualified
+                                            text: i18n("Large")
+                                            // qmllint enable unqualified
+                                        }
+                                        QQC2.SpinBox {
+                                            id: largeSpin
+
+                                            objectName: "largeSpin" + userRow.modelData
+                                            Layout.preferredWidth: Kirigami.Units.gridUnit * 3.5
+                                            from: 0
+                                            to: 600
+                                            editable: true
+                                            // 0 = the automatic rule; a stored entry
+                                            // without largeBreakMin shows 0.
+                                            value: userRow.slot && userRow.slot.largeBreakMin > 0
+                                                   ? userRow.slot.largeBreakMin : 0
+                                            onValueModified: userRow.commit()
+                                        }
+                                        Item {
+                                            Layout.fillWidth: true
+                                        }
+                                        QQC2.ToolButton {
+                                            id: deleteButton
+
+                                            objectName: "deleteButton" + userRow.modelData
+                                            icon.name: "edit-delete-remove"
+                                            onClicked: full.deleteUserPreset(userRow.slotIdx)
+                                            // qmllint disable unqualified
+                                            QQC2.ToolTip.visible: deleteButton.hovered
+                                            QQC2.ToolTip.text: i18n("Delete preset")
+                                            QQC2.ToolTip.delay: Kirigami.Units.longDuration
+                                            // qmllint enable unqualified
+                                        }
+                                    }
+                                }
+
+                                PlasmaComponents.Button {
+                                    id: addButton
+
+                                    objectName: "addPresetButton" + userRow.modelData
+                                    anchors {
+                                        left: parent.left
+                                        right: parent.right
+                                        verticalCenter: parent.verticalCenter
+                                    }
+                                    visible: !userRow.occupied
+                                    icon.name: "list-add"
+                                    // qmllint disable unqualified
+                                    text: i18n("Add preset")
+                                    // qmllint enable unqualified
+                                    onClicked: full.addUserPresetAt(userRow.slotIdx)
+                                }
+                            }
+                        }
+                    }
+
+                    // Automatic-rule hint for the Large spinboxes above: one small,
+                    // low-opacity, ALWAYS-laid-out line (never visible:false).
+                    // Round 6 clip fix: it WRAPS, and a wrapped label's implicit
+                    // height is width-dependent and late-settling — the mechanism
+                    // behind the real shell's bottom clip — so the height is
+                    // RESERVED for the measured 2-line wrap instead (see the
+                    // reservedHintHeight comment at the card root).
+                    QQC2.Label {
+                        id: largeBreakHint
+
+                        objectName: "largeBreakHint"
+                        Layout.fillWidth: true
+                        Layout.minimumHeight: full.reservedHintHeight(largeBreakHint)
+                        Layout.maximumHeight: full.reservedHintHeight(largeBreakHint)
+                        Layout.preferredHeight: full.reservedHintHeight(largeBreakHint)
+                        wrapMode: Text.WordWrap
+                        font: Kirigami.Theme.smallFont
+                        opacity: 0.7
                         // qmllint disable unqualified
-                        text: i18n("Desk reminder")
+                        text: i18n("Large break 0 = automatic rule: 20 / 30 / 40 min by break length.")
                         // qmllint enable unqualified
                     }
-                    QQC2.Switch {
-                        checked: full.deskReminderEnabled
-                        onToggled: full.setDeskReminderEnabled(checked)
-                    }
-                    QQC2.SpinBox {
-                        id: deskMinutesSpin
 
-                        objectName: "deskMinutesSpin"
-                        Layout.preferredWidth: Kirigami.Units.gridUnit * 3.5
-                        from: 1
-                        to: 240
-                        editable: true
-                        value: full.deskReminderMinutes
-                        onValueModified: full.setDeskReminderMinutes(deskMinutesSpin.value)
+                    // ONE collision warning for the whole settings page. The line is
+                    // ALWAYS laid out at exactly one line height (no wrap — it
+                    // elides), so its height is constant whether or not a collision
+                    // is active: editing a preset toward a Built-in duplicate
+                    // cannot re-height the page or the card. This is the
+                    // consolidated keeper of the round-3 per-row reserved warning
+                    // lines.
+                    QQC2.Label {
+                        id: builtinCollisionWarning
+
+                        objectName: "builtinCollisionWarning"
+                        Layout.fillWidth: true
+                        opacity: settingsPage.hasCollision ? 1 : 0
+                        elide: Text.ElideRight
+                        color: Kirigami.Theme.neutralTextColor
+                        font: Kirigami.Theme.smallFont
+                        // Static text: with derived naming a preset's identity is
+                        // its minutes, so the message no longer names an entry.
+                        // qmllint disable unqualified
+                        text: i18n("Can't be identical to a Built-in — change the minutes.")
+                        // qmllint enable unqualified
+                    }
+
+                    Kirigami.Separator {
+                        Layout.fillWidth: true
+                    }
+
+                    // Desk Reminder: on/off + interval, effective from the next Work Block.
+                    RowLayout {
+                        objectName: "deskControls"
+                        spacing: Kirigami.Units.smallSpacing
+
+                        QQC2.Label {
+                            id: deskReminderLabel
+
+                            objectName: "deskReminderLabel"
+                            Layout.fillWidth: true
+                            // The fillWidth element between fixed-width controls:
+                            // elide, never clip or stretch the row.
+                            elide: Text.ElideRight
+                            // qmllint disable unqualified
+                            text: i18n("Desk reminder")
+                            // qmllint enable unqualified
+                        }
+                        QQC2.Switch {
+                            checked: full.deskReminderEnabled
+                            onToggled: full.setDeskReminderEnabled(checked)
+                        }
+                        QQC2.SpinBox {
+                            id: deskMinutesSpin
+
+                            objectName: "deskMinutesSpin"
+                            Layout.preferredWidth: Kirigami.Units.gridUnit * 3.5
+                            from: 1
+                            to: 240
+                            editable: true
+                            value: full.deskReminderMinutes
+                            onValueModified: full.setDeskReminderMinutes(deskMinutesSpin.value)
+                        }
+                        QQC2.Label {
+                            // qmllint disable unqualified
+                            text: i18n("min")
+                            // qmllint enable unqualified
+                        }
                     }
                     QQC2.Label {
+                        id: deskHint
+
+                        objectName: "deskHint"
+                        Layout.fillWidth: true
+                        // Round 6 clip fix: reserved height for the measured
+                        // 2-line wrap (see reservedHintHeight at the card root) —
+                        // at the time the desk hint was the settings page's
+                        // bottom-most element, so its late-settling implicit
+                        // height was exactly what painted past the popup's edge.
+                        Layout.minimumHeight: full.reservedHintHeight(deskHint)
+                        Layout.maximumHeight: full.reservedHintHeight(deskHint)
+                        Layout.preferredHeight: full.reservedHintHeight(deskHint)
+                        wrapMode: Text.WordWrap
+                        font: Kirigami.Theme.smallFont
+                        opacity: 0.7
                         // qmllint disable unqualified
-                        text: i18n("min")
+                        text: i18n("Reminds you to alternate your desk height while working.")
                         // qmllint enable unqualified
                     }
-                }
-                QQC2.Label {
-                    id: deskHint
 
-                    objectName: "deskHint"
-                    Layout.fillWidth: true
-                    // Round 6 clip fix: reserved height for the measured
-                    // 2-line wrap (see reservedHintHeight at the card root) —
-                    // the desk hint is the settings page's bottom-most
-                    // element, so its late-settling implicit height was
-                    // exactly what painted past the real popup's edge.
-                    Layout.minimumHeight: full.reservedHintHeight(deskHint)
-                    Layout.maximumHeight: full.reservedHintHeight(deskHint)
-                    Layout.preferredHeight: full.reservedHintHeight(deskHint)
-                    wrapMode: Text.WordWrap
-                    font: Kirigami.Theme.smallFont
-                    opacity: 0.7
-                    // qmllint disable unqualified
-                    text: i18n("Reminds you to alternate your desk height while working.")
-                    // qmllint enable unqualified
+                    // Auto-start (SPEC-003): below the Desk Reminder controls. An
+                    // unavailable lock source leaves the switch inert and says so;
+                    // manual timing behavior stays exactly as it was.
+                    RowLayout {
+                        objectName: "autoStartControls"
+                        spacing: Kirigami.Units.smallSpacing
+
+                        QQC2.Label {
+                            id: autoStartLabel
+
+                            objectName: "autoStartLabel"
+                            Layout.fillWidth: true
+                            elide: Text.ElideRight
+                            // qmllint disable unqualified
+                            text: i18n("Auto-start")
+                            // qmllint enable unqualified
+                        }
+                        QQC2.Switch {
+                            objectName: "autoStartSwitch"
+                            enabled: full.lockSourceAvailable
+                            checked: full.autoStartEnabled
+                            onToggled: full.setAutoStartEnabled(checked)
+                        }
+                        QQC2.SpinBox {
+                            id: autoStartMinutesSpin
+
+                            objectName: "autoStartMinutesSpin"
+                            Layout.preferredWidth: Kirigami.Units.gridUnit * 3.5
+                            from: 1
+                            to: 60
+                            editable: true
+                            value: full.autoStartMinutes
+                            onValueModified: full.setAutoStartMinutes(autoStartMinutesSpin.value)
+                        }
+                        QQC2.Label {
+                            // qmllint disable unqualified
+                            text: i18n("min")
+                            // qmllint enable unqualified
+                        }
+                    }
+                    QQC2.Label {
+                        id: autoStartHint
+
+                        objectName: "autoStartHint"
+                        Layout.fillWidth: true
+                        Layout.minimumHeight: full.reservedHintHeight(autoStartHint)
+                        Layout.maximumHeight: full.reservedHintHeight(autoStartHint)
+                        Layout.preferredHeight: full.reservedHintHeight(autoStartHint)
+                        wrapMode: Text.WordWrap
+                        font: Kirigami.Theme.smallFont
+                        opacity: 0.7
+                        // qmllint disable unqualified
+                        text: full.lockSourceAvailable
+                            ? i18n("Starts the Default Preset after the Presence window. A lock pauses work and re-arms a manual Disable.")
+                            : i18n("Screen-lock detection is unavailable: auto-start and lock pause are off.")
+                        // qmllint enable unqualified
+                    }
                 }
             }
         }
-    }
 }

@@ -37,6 +37,8 @@ TestCase {
     property int writtenDefault: -1
     property var writtenDeskEnabled: null
     property var writtenDeskMinutes: null
+    property var writtenAutoStartEnabled: null
+    property var writtenAutoStartMinutes: null
 
     // Plain Window host: without a window, QQuickLayout polish never runs in
     // the test process and page-switch geometry would stay frozen.
@@ -46,6 +48,7 @@ TestCase {
         property string phase: "idle"
         property string remainingText: ""
         property bool pendingBreak: false
+        property bool paused: false
         property bool popupClosed: false
         property var startedPreset: null
         function closePopup() { suite.mockCtrl.popupClosed = true; }
@@ -81,6 +84,9 @@ TestCase {
         suite.writtenDefault = -1;
         suite.writtenDeskEnabled = null;
         suite.writtenDeskMinutes = null;
+        suite.writtenAutoStartEnabled = null;
+        suite.writtenAutoStartMinutes = null;
+        mockCtrl.paused = false;
         mockCtrl.popupClosed = false;
         mockCtrl.startedPreset = null;
         mockCtrl.phase = "idle";
@@ -97,7 +103,10 @@ TestCase {
             presetsJson: json,
             defaultPreset: defaultIdx,
             deskReminderEnabled: true,
-            deskReminderMinutes: 30
+            deskReminderMinutes: 30,
+            autoStartEnabled: true,
+            autoStartMinutes: 5,
+            lockSourceAvailable: true
         });
         verify(obj !== null, "create failed: " + (comp ? comp.errorString() : "?"));
         // Plasma's popup dialog sizes the card from its implicit size in BOTH
@@ -116,6 +125,8 @@ TestCase {
         obj.defaultPresetWritten.connect(function (i) { suite.writtenDefault = i; });
         obj.deskReminderEnabledWritten.connect(function (e) { suite.writtenDeskEnabled = e; });
         obj.deskReminderMinutesWritten.connect(function (m) { suite.writtenDeskMinutes = m; });
+        obj.autoStartEnabledWritten.connect(function (e) { suite.writtenAutoStartEnabled = e; });
+        obj.autoStartMinutesWritten.connect(function (m) { suite.writtenAutoStartMinutes = m; });
         // qmllint enable missing-property
         // Two polish rounds (header row + deep grid) — 200ms settles both.
         wait(200);                    // settle layout polish before any geometry read
@@ -317,7 +328,10 @@ TestCase {
             presetsJson: seedJson,
             defaultPreset: 0,
             deskReminderEnabled: true,
-            deskReminderMinutes: 30
+            deskReminderMinutes: 30,
+            autoStartEnabled: true,
+            autoStartMinutes: 5,
+            lockSourceAvailable: true
         });
         verify(f !== null, "create failed: " + (comp ? comp.errorString() : "?"));
         f.width = Qt.binding(function () { return f.implicitWidth; });
@@ -336,13 +350,17 @@ TestCase {
         // late growth), and settings being open changes nothing.
         let dh = findChild(f, "deskHint");
         let lh = findChild(f, "largeBreakHint");
-        verify(dh !== null && lh !== null);
+        let ah = findChild(f, "autoStartHint");
+        verify(dh !== null && lh !== null && ah !== null);
         verify(dh.paintedHeight <= dh.height + 0.5,
                "deskHint text must fit its reserved height (painted " + dh.paintedHeight
                + " > box " + dh.height + ")");
         verify(lh.paintedHeight <= lh.height + 0.5,
                "largeBreakHint text must fit its reserved height (painted " + lh.paintedHeight
                + " > box " + lh.height + ")");
+        verify(ah.paintedHeight <= ah.height + 0.5,
+               "autoStartHint text must fit its reserved height (painted " + ah.paintedHeight
+               + " > box " + ah.height + ")");
         f.settingsOpen = true;
         wait(150);
         wait(150);
@@ -351,6 +369,8 @@ TestCase {
                "deskHint must still fit its reserved height once settled");
         verify(lh.paintedHeight <= lh.height + 0.5,
                "largeBreakHint must still fit its reserved height once settled");
+        verify(ah.paintedHeight <= ah.height + 0.5,
+               "autoStartHint must still fit its reserved height once settled");
         f.destroy();
     }
 
@@ -1087,6 +1107,99 @@ TestCase {
         compare(suite.writtenDeskMinutes, 45);
         f.setDeskReminderMinutes(NaN);            // junk falls back to the current value
         compare(suite.writtenDeskMinutes, 30);
+        f.destroy();
+    }
+
+    // --- auto-start controls (SPEC-003) ---
+
+    function test_settings_autoStartSection_belowDeskReminder() {
+        let f = makeFull(seedJson, 0);
+        findChild(f, "settingsGear").clicked();
+        wait(50);
+        let controls = findChild(f, "autoStartControls");
+        let label = findChild(f, "autoStartLabel");
+        let sw = findChild(f, "autoStartSwitch");
+        let spin = findChild(f, "autoStartMinutesSpin");
+        let hint = findChild(f, "autoStartHint");
+        verify(controls !== null && label !== null && sw !== null
+               && spin !== null && hint !== null,
+               "auto-start row, switch, spinbox and hint must exist");
+        compare(label.text, "Auto-start");
+        compare(sw.checked, true);
+        compare(spin.from, 1);
+        compare(spin.to, 60);
+        compare(spin.value, 5);
+        verify(spin.editable === true);
+        // The row sits BELOW the Desk Reminder controls and inside the frame.
+        let desk = findChild(f, "deskControls");
+        verify(controls.mapToItem(f, 0, 0).y > desk.mapToItem(f, 0, 0).y,
+               "auto-start row must sit below the Desk Reminder row");
+        verify(controls.mapToItem(f, 0, controls.height).y <= f.implicitHeight + 0.5,
+               "auto-start row must be inside the card frame");
+        verify(hint.mapToItem(f, 0, hint.height).y <= f.implicitHeight + 0.5,
+               "auto-start hint must be inside the card frame");
+        // The wrapped hint reserves its box, like the other settings hints.
+        verify(hint.wrapMode === Text.WordWrap);
+        verify(Math.abs(hint.height - f.reservedHintHeight(hint)) <= 0.5,
+               "auto-start hint must reserve the measured wrap height");
+        f.destroy();
+    }
+
+    function test_autoStartConfig_writesAndClamps() {
+        let f = makeFull(seedJson, 0);
+        f.setAutoStartEnabled(false);
+        compare(suite.writtenAutoStartEnabled, false);
+        f.setAutoStartMinutes(45);
+        compare(suite.writtenAutoStartMinutes, 45);
+        // The setter clamps 1-60; junk keeps the current stored value.
+        f.setAutoStartMinutes(0);
+        compare(suite.writtenAutoStartMinutes, 1);
+        f.setAutoStartMinutes(90);
+        compare(suite.writtenAutoStartMinutes, 60);
+        f.setAutoStartMinutes(NaN);
+        compare(suite.writtenAutoStartMinutes, 5);
+        f.setAutoStartMinutes(7.4);
+        compare(suite.writtenAutoStartMinutes, 7);
+        f.destroy();
+    }
+
+    function test_pausedWork_disablesStartBreakNowAndDelay() {
+        let f = makeFull(seedJson, 0);
+        f.ctrl.phase = "work";
+        f.ctrl.pendingBreak = true;
+        f.ctrl.paused = true;
+        wait(30);
+        let sbn = findChild(f, "startBreakNowButton");
+        let db = findChild(f, "delayBreakButton");
+        verify(sbn !== null && db !== null);
+        verify(sbn.enabled === false,
+               "Start break now must be disabled while a Work Block is paused");
+        verify(db.enabled === false,
+               "Delay must be disabled while a Work Block is paused");
+        f.ctrl.paused = false;
+        wait(30);
+        verify(sbn.enabled === true, "Start break now returns when the block resumes");
+        verify(db.enabled === true, "Delay returns when the block resumes with a pending break");
+        f.destroy();
+    }
+
+    function test_autoStartControls_lockSourceUnavailable_switchInert() {
+        let f = makeFull(seedJson, 0);
+        findChild(f, "settingsGear").clicked();
+        wait(30);
+        f.lockSourceAvailable = false;
+        wait(30);
+        let sw = findChild(f, "autoStartSwitch");
+        let hint = findChild(f, "autoStartHint");
+        verify(sw !== null && hint !== null);
+        verify(sw.enabled === false, "the auto-start switch must be inert without a lock source");
+        verify(hint.text.indexOf("unavailable") >= 0 || hint.text.indexOf("Unavailable") >= 0,
+               "the hint must say the lock source is unavailable, got: " + hint.text);
+        f.lockSourceAvailable = true;
+        wait(30);
+        verify(sw.enabled === true, "the switch returns when the lock source is available");
+        verify(hint.text.indexOf("unavailable") < 0 && hint.text.indexOf("Unavailable") < 0,
+               "the available hint explains the Presence rule instead");
         f.destroy();
     }
 }

@@ -772,4 +772,494 @@ TestCase {
         compare(st.largeBreak, true);
         compare(st.deadline, when + 40 * min + 45 * min);  // explicit 45 wins
     }
+
+    // --- Slice 18: Presence, lock pause and auto-start (SPEC-003) ---
+
+    function autoState(enabled, minutes) {
+        var st = Machine.initialState();
+        st.autoStartEnabled = enabled === true;
+        st.autoStartMinutes = minutes === undefined ? 5 : minutes;
+        return st;
+    }
+
+    function test_initialState_presenceFields() {
+        var st = Machine.initialState();
+        compare(st.locked, false);
+        compare(st.presenceSince, 0);
+        compare(st.autoStartEnabled, false);
+        compare(st.autoStartMinutes, 5);
+        compare(st.autoStartArmed, false);
+        compare(st.paused, false);
+        compare(st.pausedRemainingMs, 0);
+        compare(st.deskPausedRemainingMs, 0);
+    }
+
+    function test_screenLocked_pausesRunningWork_andFreezesDesk() {
+        var st = Machine.handle(startDeskWork(), { type: "screenLocked" }, t0 + 10 * min);
+        compare(st.phase, "work");
+        compare(st.locked, true);
+        compare(st.presenceSince, 0);
+        compare(st.paused, true);
+        compare(st.pausedRemainingMs, 40 * min);
+        compare(st.deskPausedRemainingMs, 20 * min);
+        compare(st.deadline, 0);
+        compare(st.deskDeadline, 0);
+        compare(st.effects.length, 0);
+    }
+
+    function test_screenLocked_whenAlreadyLocked_isIdentityNoop() {
+        var locked = Machine.handle(start50x10(), { type: "screenLocked" }, t0 + 10 * min);
+        var again = Machine.handle(locked, { type: "screenLocked" }, t0 + 11 * min);
+        verify(again === locked, "a repeated lock observation must not clone state");
+    }
+
+    function test_screenUnlocked_resumesWorkAndDeskFromFrozenTimes() {
+        var locked = Machine.handle(startDeskWork(), { type: "screenLocked" }, t0 + 10 * min);
+        var st = Machine.handle(locked, { type: "screenUnlocked" }, t0 + 40 * min);
+        compare(st.locked, false);
+        compare(st.presenceSince, t0 + 40 * min);
+        compare(st.paused, false);
+        compare(st.pausedRemainingMs, 0);
+        compare(st.deskPausedRemainingMs, 0);
+        compare(st.deadline, t0 + 40 * min + 40 * min);
+        compare(st.deskDeadline, t0 + 40 * min + 20 * min);
+        compare(st.effects.length, 0);
+    }
+
+    function test_screenUnlocked_whenAlreadyUnlocked_isIdentityNoop() {
+        var opened = Machine.handle(autoState(true, 5), { type: "screenUnlocked" }, t0);
+        compare(opened.presenceSince, t0);
+        var again = Machine.handle(opened, { type: "screenUnlocked" }, t0 + 2 * min);
+        verify(again === opened, "a repeated unlock observation must not reset the window");
+    }
+
+    function test_screenLocked_duringBreak_keepsWallClockDeadline() {
+        var brk = startBreak();
+        var st = Machine.handle(brk, { type: "screenLocked" }, t0 + 52 * min);
+        compare(st.phase, "break");
+        compare(st.locked, true);
+        compare(st.paused, false);
+        compare(st.deadline, t0 + 60 * min);
+        compare(st.effects.length, 0);
+    }
+
+    function test_screenLocked_duringWait_keepsWait() {
+        var wait = Machine.handle(startBreak(), { type: "tick" }, t0 + 61 * min);
+        var st = Machine.handle(wait, { type: "screenLocked" }, t0 + 62 * min);
+        compare(st.phase, "wait");
+        compare(st.continueEnabled, true);
+        compare(st.paused, false);
+        compare(st.deadline, 0);
+    }
+
+    function test_screenLocked_preservesPendingBreak() {
+        var delayed = Machine.handle(startBreak(), { type: "delayBreak" }, t0 + 51 * min);
+        compare(delayed.pendingBreak, true);
+        var locked = Machine.handle(delayed, { type: "screenLocked" }, t0 + 51 * min);
+        compare(locked.pendingBreak, true);
+        var st = Machine.handle(locked, { type: "screenUnlocked" }, t0 + 55 * min);
+        compare(st.phase, "work");
+        compare(st.pendingBreak, true);
+        compare(st.deadline, t0 + 55 * min + 5 * min);
+    }
+
+    function test_screenLocked_whileDisabled_armsAutoStart() {
+        var dis = Machine.handle(start50x10(), { type: "disable" }, t0 + 10 * min);
+        compare(dis.autoStartArmed, false);
+        var st = Machine.handle(dis, { type: "screenLocked" }, t0 + 12 * min);
+        compare(st.phase, "disabled");
+        compare(st.locked, true);
+        compare(st.autoStartArmed, true);
+    }
+
+    function test_screenLocked_whileIdle_doesNotPause() {
+        var st = Machine.handle(autoState(true, 5), { type: "screenLocked" }, t0 + 3 * min);
+        compare(st.phase, "idle");
+        compare(st.paused, false);
+        compare(st.locked, true);
+    }
+
+    function test_screenLocked_whileDeskDue_keepsPromptAndFreezesWork() {
+        var due = Machine.handle(startDeskWork(), { type: "tick" }, t0 + 31 * min);
+        compare(due.deskDue, true);
+        var locked = Machine.handle(due, { type: "screenLocked" }, t0 + 32 * min);
+        compare(locked.paused, true);
+        compare(locked.pausedRemainingMs, 18 * min);
+        compare(locked.deskDue, true);
+        compare(locked.deskPausedRemainingMs, 0);
+        var st = Machine.handle(locked, { type: "screenUnlocked" }, t0 + 42 * min);
+        compare(st.deskDue, true);
+        compare(st.deskDeadline, 0);
+        compare(st.deadline, t0 + 42 * min + 18 * min);
+    }
+
+    function presenceOpened(enabled, minutes) {
+        return Machine.handle(autoState(enabled, minutes), { type: "screenUnlocked" }, t0);
+    }
+
+    function test_presenceTick_atWindow_startsDefault_andNotifiesOnce() {
+        var st = Machine.handle(presenceOpened(true, 5), { type: "presenceTick" }, t0 + 5 * min);
+        compare(st.phase, "work");
+        compare(st.preset.label, "50/10");
+        compare(st.deadline, t0 + 5 * min + 50 * min);
+        compare(st.presenceSince, 0);
+        compare(st.paused, false);
+        compare(st.effects.length, 1);
+        compare(st.effects[0].type, "notifyAutoStart");
+        compare(st.effects[0].preset, "50/10");
+        var chime = st.effects.some(function (e) { return e.type === "chime"; });
+        compare(chime, false, "auto-start must never chime");
+    }
+
+    function test_presenceTick_belowWindow_doesNothing() {
+        var st = Machine.handle(presenceOpened(true, 5), { type: "presenceTick" }, t0 + 5 * min - 1);
+        compare(st.phase, "idle");
+        compare(st.effects.length, 0);
+    }
+
+    function test_presenceTick_aboveWindow_starts() {
+        var st = Machine.handle(presenceOpened(true, 5), { type: "presenceTick" }, t0 + 6 * min);
+        compare(st.phase, "work");
+        compare(st.preset.label, "50/10");
+    }
+
+    function test_presenceTick_usesDefaultPreset_andNotifiesItsLabel() {
+        var st = presenceOpened(true, 5);
+        st.defaultPreset = { label: "25/5", workMin: 25, breakMin: 5 };
+        st = Machine.handle(st, { type: "presenceTick" }, t0 + 5 * min);
+        compare(st.phase, "work");
+        compare(st.preset.label, "25/5");
+        compare(st.deadline, t0 + 5 * min + 25 * min);
+        compare(st.effects[0].preset, "25/5");
+    }
+
+    function test_presenceTick_missingStar_fallsBackToBuiltIn50x10() {
+        var st = presenceOpened(true, 5);
+        st.defaultPreset = null;
+        st = Machine.handle(st, { type: "presenceTick" }, t0 + 5 * min);
+        compare(st.phase, "work");
+        compare(st.preset.label, "50/10");
+        compare(st.effects[0].preset, "50/10");
+    }
+
+    function test_presenceTick_hostileStar_fallsBackToBuiltIn() {
+        var st = presenceOpened(true, 5);
+        st.defaultPreset = { label: "x", workMin: NaN, breakMin: -3 };
+        st = Machine.handle(st, { type: "presenceTick" }, t0 + 5 * min);
+        compare(st.preset.workMin, 50);
+        compare(st.preset.breakMin, 10);
+        compare(st.effects[0].preset, "50/10");
+    }
+
+    function test_presenceTick_effectCarriesDerivedLabel() {
+        // The notification names the preset's derived label, not a stale or
+        // hand-edited stored label (SPEC-002 derived naming).
+        var st = presenceOpened(true, 5);
+        st.defaultPreset = { label: "Deep Work", workMin: 90, breakMin: 12 };
+        st = Machine.handle(st, { type: "presenceTick" }, t0 + 5 * min);
+        compare(st.effects.length, 1);
+        compare(st.effects[0].preset, "90/12");
+    }
+
+    function test_presenceTick_autoStartOff_neverStarts() {
+        var st = Machine.handle(presenceOpened(false, 5), { type: "presenceTick" }, t0 + 60 * min);
+        compare(st.phase, "idle");
+        compare(st.effects.length, 0);
+    }
+
+    function test_presenceTick_withoutPresenceWindow_neverStarts() {
+        var st = Machine.handle(autoState(true, 5), { type: "presenceTick" }, t0 + 60 * min);
+        compare(st.phase, "idle");
+        compare(st.effects.length, 0);
+    }
+
+    function test_screenLock_resetsPresenceWindow() {
+        // 3 unlocked minutes, then a lock: the window restarts on the next
+        // unlock, so the old elapsed time cannot trigger a start.
+        var st = Machine.handle(presenceOpened(true, 5), { type: "screenLocked" }, t0 + 3 * min);
+        compare(st.presenceSince, 0);
+        st = Machine.handle(st, { type: "screenUnlocked" }, t0 + 4 * min);
+        st = Machine.handle(st, { type: "presenceTick" }, t0 + 7 * min);
+        compare(st.phase, "idle");
+        st = Machine.handle(st, { type: "presenceTick" }, t0 + 9 * min);
+        compare(st.phase, "work");
+    }
+
+    function test_presenceTick_disabled_requiresLockReArm() {
+        var st = presenceOpened(true, 5);
+        st = Machine.handle(st, { type: "disable" }, t0 + 1 * min);
+        st = Machine.handle(st, { type: "presenceTick" }, t0 + 30 * min);
+        compare(st.phase, "disabled");
+        compare(st.effects.length, 0);
+        // One lock re-arms; the next unlock's window triggers a start.
+        st = Machine.handle(st, { type: "screenLocked" }, t0 + 31 * min);
+        compare(st.autoStartArmed, true);
+        st = Machine.handle(st, { type: "screenUnlocked" }, t0 + 32 * min);
+        st = Machine.handle(st, { type: "presenceTick" }, t0 + 37 * min);
+        compare(st.phase, "work");
+        compare(st.preset.label, "50/10");
+    }
+
+    function test_presenceTick_neverFiresFromWorkBreakOrWait() {
+        var work = presenceOpened(true, 5);
+        work = Machine.handle(work, { type: "startPreset", preset: defaultPreset() }, t0);
+        work.presenceSince = t0;
+        work = Machine.handle(work, { type: "presenceTick" }, t0 + 10 * min);
+        compare(work.phase, "work");
+        compare(work.effects.length, 0);
+
+        var brk = presenceOpened(true, 5);
+        brk = Machine.handle(brk, { type: "startPreset", preset: defaultPreset() }, t0);
+        brk = Machine.handle(brk, { type: "tick" }, t0 + 50 * min + 1);
+        brk = Machine.handle(brk, { type: "tick" }, t0 + 50 * min + 2); // settle break effects
+        brk.presenceSince = t0;
+        brk = Machine.handle(brk, { type: "presenceTick" }, t0 + 55 * min);
+        compare(brk.phase, "break");
+        compare(brk.effects.length, 0);
+
+        var wait = presenceOpened(true, 5);
+        wait = Machine.handle(wait, { type: "startPreset", preset: defaultPreset() }, t0);
+        wait = Machine.handle(wait, { type: "tick" }, t0 + 61 * min);
+        wait = Machine.handle(wait, { type: "tick" }, t0 + 61 * min + 1); // settle wait effects
+        wait.presenceSince = t0;
+        wait = Machine.handle(wait, { type: "presenceTick" }, t0 + 70 * min);
+        compare(wait.phase, "wait");
+        compare(wait.effects.length, 0);
+    }
+
+    function test_presenceTick_enablingMidWindow_doesNotResetExistingWindow() {
+        // Enabling takes effect on the next tick; a window already past the
+        // configured duration starts immediately (it is not restarted).
+        var st = presenceOpened(false, 5);
+        st.autoStartEnabled = true;
+        st = Machine.handle(st, { type: "presenceTick" }, t0 + 6 * min);
+        compare(st.phase, "work");
+    }
+
+    function test_presenceTick_hostilePresenceValues_neverStart() {
+        [0, -5, NaN, Infinity, t0 + 20 * min].forEach(function (since) {
+            var st = autoState(true, 5);
+            st.presenceSince = since;
+            st = Machine.handle(st, { type: "presenceTick" }, t0 + 10 * min);
+            compare(st.phase, "idle", "presenceSince=" + since);
+            compare(st.effects.length, 0, "presenceSince=" + since);
+        });
+    }
+
+    function test_presenceTick_hostileMinutes_roundAndClamp() {
+        // Junk falls back to 5; valid values round to an integer and clamp 1-60.
+        [[NaN, 5], [0, 1], [-3, 1], [2.4, 2], [0.6, 1], [100, 60], [Infinity, 5]].forEach(function (pair) {
+            var minutes = pair[0];
+            var expected = pair[1];
+            var below = autoState(true, minutes);
+            below.presenceSince = t0;
+            below = Machine.handle(below, { type: "presenceTick" }, t0 + expected * min - 1);
+            compare(below.phase, "idle", "minutes=" + minutes);
+            var at = autoState(true, minutes);
+            at.presenceSince = t0;
+            at = Machine.handle(at, { type: "presenceTick" }, t0 + expected * min);
+            compare(at.phase, "work", "minutes=" + minutes);
+        });
+    }
+
+    function test_presenceTick_withDeskDue_hidesStaleOverlay() {
+        // Defensive path: a restored idle state can still carry a due prompt.
+        var st = autoState(true, 5);
+        st.presenceSince = t0;
+        st.deskDue = true;
+        st = Machine.handle(st, { type: "presenceTick" }, t0 + 5 * min);
+        compare(st.phase, "work");
+        compare(st.deskDue, false);
+        var types = st.effects.map(function (e) { return e.type; });
+        compare(types.indexOf("hideOverlay") >= 0, true);
+        compare(types.indexOf("notifyAutoStart") >= 0, true);
+        compare(types.indexOf("showOverlay"), -1);
+        compare(types.indexOf("chime"), -1);
+    }
+
+    function test_presenceTick_startsWorkWithDeskCountdownArmed() {
+        var st = autoState(true, 5);
+        st.deskEnabled = true;
+        st.deskMinutes = 30;
+        st.presenceSince = t0;
+        st = Machine.handle(st, { type: "presenceTick" }, t0 + 5 * min);
+        compare(st.phase, "work");
+        compare(st.deskDeadline, t0 + 5 * min + 30 * min);
+    }
+
+    // --- Slice 19: a Paused Work Block ignores ticks and clears on transitions ---
+
+    function test_pausedTick_neitherExpiresWorkNorStepsDesk() {
+        var locked = Machine.handle(startDeskWork(), { type: "screenLocked" }, t0 + 10 * min);
+        // Far past the original work deadline and the desk deadline.
+        var st = Machine.tick(locked, t0 + 300 * min);
+        compare(st.phase, "work");
+        compare(st.paused, true);
+        compare(st.deadline, 0);
+        compare(st.deskDeadline, 0);
+        compare(st.pausedRemainingMs, 40 * min);
+        compare(st.deskPausedRemainingMs, 20 * min);
+        compare(st.effects.length, 0);
+        var types = st.effects.map(function (e) { return e.type; });
+        compare(types.indexOf("showOverlay"), -1, "a paused block must not expire into a Break");
+    }
+
+    function test_pausedWork_restoredRaw_doesNotExpire_andResumesOnUnlock() {
+        // Builds the exact raw state main.qml restores from a paused snapshot.
+        var raw = Machine.decorate({
+            phase: "work", deadline: 0,
+            preset: { label: "50/10", workMin: 50, breakMin: 10 },
+            completedBlocks: 0, cycleLength: 4,
+            pendingBreak: false, continueEnabled: false, largeBreak: false,
+            deskDeadline: 0, deskDue: false, deskEnabled: true, deskMinutes: 30,
+            defaultPreset: null,
+            autoStartEnabled: true, autoStartMinutes: 5, autoStartArmed: false,
+            presenceSince: 0, locked: true,
+            paused: true, pausedRemainingMs: 12 * min, deskPausedRemainingMs: 3 * min,
+            effects: []
+        });
+        var st = Machine.tick(raw, t0 + 120 * min);
+        compare(st.phase, "work");
+        compare(st.paused, true);
+        compare(st.pausedRemainingMs, 12 * min);
+        compare(st.effects.length, 0);
+        st = Machine.handle(st, { type: "screenUnlocked" }, t0 + 120 * min);
+        compare(st.paused, false);
+        compare(st.deadline, t0 + 120 * min + 12 * min);
+        compare(st.deskDeadline, t0 + 120 * min + 3 * min);
+    }
+
+    function test_disable_clearsPauseFieldsAndDisarms() {
+        var locked = Machine.handle(start50x10(), { type: "screenLocked" }, t0 + 10 * min);
+        var st = Machine.handle(locked, { type: "disable" }, t0 + 20 * min);
+        compare(st.phase, "disabled");
+        compare(st.paused, false);
+        compare(st.pausedRemainingMs, 0);
+        compare(st.deskPausedRemainingMs, 0);
+        compare(st.autoStartArmed, false);
+    }
+
+    function test_enterWork_clearsPauseFieldsAndPresenceWindow() {
+        var st = autoState(true, 5);
+        st.presenceSince = t0 - 10 * min;
+        st.paused = true;
+        st.pausedRemainingMs = 5 * min;
+        st.deskPausedRemainingMs = 2 * min;
+        st = Machine.handle(st, { type: "startPreset", preset: defaultPreset() }, t0);
+        compare(st.phase, "work");
+        compare(st.paused, false);
+        compare(st.pausedRemainingMs, 0);
+        compare(st.deskPausedRemainingMs, 0);
+        compare(st.presenceSince, 0);
+    }
+
+    function test_screenLocked_withDeskOff_freezesWorkOnly() {
+        var st = Machine.handle(start50x10(), { type: "screenLocked" }, t0 + 10 * min);
+        compare(st.pausedRemainingMs, 40 * min);
+        compare(st.deskPausedRemainingMs, 0);
+        st = Machine.handle(st, { type: "screenUnlocked" }, t0 + 30 * min);
+        compare(st.deadline, t0 + 30 * min + 40 * min);
+        compare(st.deskDeadline, 0);
+    }
+
+    // --- Slice 20: paused edge cases found in review ---
+
+    function test_delayBreak_whilePaused_extendsFrozenTime() {
+        // A delayed break is a work phase with pendingBreak true. Locking it
+        // pauses it; pressing Delay again must add five minutes to the frozen
+        // remaining time, not write a live deadline that unlock overwrites.
+        var delayed = Machine.handle(startBreak(), { type: "delayBreak" }, t0 + 51 * min);
+        compare(delayed.phase, "work");
+        compare(delayed.pendingBreak, true);
+        var locked = Machine.handle(delayed, { type: "screenLocked" }, t0 + 52 * min);
+        compare(locked.paused, true);
+        compare(locked.pausedRemainingMs, 4 * min);
+        var st = Machine.handle(locked, { type: "delayBreak" }, t0 + 53 * min);
+        compare(st.phase, "work");
+        compare(st.paused, true);
+        compare(st.pendingBreak, true);
+        compare(st.deadline, 0);
+        compare(st.pausedRemainingMs, 9 * min);   // 4 left + the 5-minute extension
+        st = Machine.handle(st, { type: "screenUnlocked" }, t0 + 60 * min);
+        compare(st.paused, false);
+        compare(st.deadline, t0 + 60 * min + 9 * min);
+    }
+
+    function test_startBreakNow_whilePaused_isRefused() {
+        var locked = Machine.handle(startDeskWork(), { type: "screenLocked" }, t0 + 10 * min);
+        var st = Machine.handle(locked, { type: "startBreakNow" }, t0 + 12 * min);
+        verify(st === locked, "a paused block must refuse Start break now");
+    }
+
+    function test_screenLocked_atDeskDeadline_preservesDuePrompt() {
+        // Locking exactly at the desk deadline, before the next tick, must not
+        // turn the already-due prompt into a fresh full interval on unlock.
+        var locked = Machine.handle(startDeskWork(), { type: "screenLocked" }, t0 + 30 * min);
+        compare(locked.paused, true);
+        var resumed = Machine.handle(locked, { type: "screenUnlocked" }, t0 + 40 * min);
+        var due = Machine.tick(resumed, t0 + 40 * min + 1);
+        compare(due.deskDue, true);
+        var types = due.effects.map(function (e) { return e.type; });
+        verify(types.indexOf("showDeskOverlay") >= 0,
+               "an already-due desk prompt must fire after resume, got " + types);
+    }
+
+    function test_screenLocked_afterAvailabilityLoss_stillArmsDisabled() {
+        // A previous outage already marked the session locked. A real lock while
+        // Disabled must still re-arm Auto-start despite the locked identity guard.
+        var dis = Machine.handle(start50x10(), { type: "disable" }, t0 + 10 * min);
+        var away = Machine.handle(dis, { type: "presenceUnavailable" }, t0 + 11 * min);
+        compare(away.locked, true);
+        compare(away.autoStartArmed, false);
+        var locked = Machine.handle(away, { type: "screenLocked" }, t0 + 12 * min);
+        compare(locked.autoStartArmed, true);
+    }
+
+    function test_screenLocked_afterRecovery_stillPausesRunningWork() {
+        // While the lock source was unreadable the outage marked the session
+        // locked but left the Work Block running. The first real observation
+        // after recovery must still pause it, despite the locked identity guard.
+        var away = Machine.handle(start50x10(), { type: "presenceUnavailable" }, t0 + 10 * min);
+        compare(away.locked, true);
+        compare(away.paused, false);
+        var recovered = Machine.handle(away, { type: "screenLocked" }, t0 + 12 * min);
+        compare(recovered.locked, true);
+        compare(recovered.paused, true);
+        compare(recovered.pausedRemainingMs, 38 * min);
+    }
+
+    function test_screenLocked_atWorkDeadline_keepsBreakAnchor() {
+        // Locking at (or after) the work deadline must not pause a finished
+        // block: the Break starts at the original expiry, so locked time is rest.
+        var locked = Machine.handle(start50x10(), { type: "screenLocked" }, t0 + 50 * min);
+        compare(locked.paused, false);
+        compare(locked.deadline, t0 + 50 * min);
+        var brk = Machine.tick(locked, t0 + 50 * min + 1);
+        compare(brk.phase, "break");
+        compare(brk.deadline, t0 + 60 * min);   // anchored at the original expiry
+    }
+
+    function test_presenceUnavailable_clearsWindowAndBlocksAutoStart() {
+        var st = presenceOpened(true, 5);
+        compare(st.presenceSince, t0);
+        st = Machine.handle(st, { type: "presenceUnavailable" }, t0 + 2 * min);
+        compare(st.locked, true);
+        compare(st.presenceSince, 0);
+        st = Machine.handle(st, { type: "presenceTick" }, t0 + 10 * min);
+        compare(st.phase, "idle");
+        compare(st.effects.length, 0);
+    }
+
+    function test_screenUnlocked_duringBreak_leavesDeadlineUntouched() {
+        var brk = startBreak();
+        brk = Machine.handle(brk, { type: "screenLocked" }, t0 + 52 * min);
+        var st = Machine.handle(brk, { type: "screenUnlocked" }, t0 + 62 * min);
+        compare(st.phase, "break");
+        compare(st.deadline, t0 + 60 * min);
+        compare(st.paused, false);
+        compare(st.continueEnabled, false);
+        st = Machine.handle(st, { type: "tick" }, t0 + 62 * min);
+        compare(st.phase, "wait");
+        compare(st.continueEnabled, true);
+    }
 }

@@ -25,12 +25,17 @@ PlasmoidItem {
         defaultPreset: root.cfgDefaultPreset
         deskReminderEnabled: root.cfgDeskReminderEnabled
         deskReminderMinutes: root.cfgDeskReminderMinutes
+        autoStartEnabled: root.cfgAutoStartEnabled
+        autoStartMinutes: root.cfgAutoStartMinutes
+        lockSourceAvailable: root.lockSourceAvailable
         // Card writes persist straight into the kcfg database; the cfg* bindings
         // echo them back so the grid re-renders from the stored truth.
         onPresetsWritten: (json) => Plasmoid.configuration.presets = json
         onDefaultPresetWritten: (presetIndex) => Plasmoid.configuration.defaultPreset = presetIndex
         onDeskReminderEnabledWritten: (enabled) => Plasmoid.configuration.deskReminderEnabled = enabled
         onDeskReminderMinutesWritten: (minutes) => Plasmoid.configuration.deskReminderMinutes = minutes
+        onAutoStartEnabledWritten: (enabled) => Plasmoid.configuration.autoStartEnabled = enabled
+        onAutoStartMinutesWritten: (minutes) => Plasmoid.configuration.autoStartMinutes = minutes
     }
 
     // ------------------------------------------------------------------ controller
@@ -51,11 +56,18 @@ PlasmoidItem {
         // it is due; a break/wait phase always takes the window instead (the
         // machine clears deskDue on every break, so this cannot deadlock).
         property bool deskDue: controller.state.deskDue === true
+        // A Paused Work Block has frozen remaining time; its end-work controls
+        // stay disabled until an unlock resumes it (SPEC-003).
+        property bool paused: controller.state.paused === true
 
         // Remaining time of the active phase ("" when there is nothing to count down).
         readonly property string remainingText: {
             if (!controller.loaded || (controller.state.phase !== "work" && controller.state.phase !== "break"))
                 return "";
+            // A Paused Work Block has no active deadline: show the frozen time
+            // so it reads as paused, never as expired (SPEC-003).
+            if (controller.state.phase === "work" && controller.state.paused === true)
+                return controller.formatMs(controller.state.pausedRemainingMs);
             return controller.formatMs(controller.state.remainingMs(Date.now()));
         }
 
@@ -67,18 +79,21 @@ PlasmoidItem {
         }
 
         // Central intent dispatch: handle → replace state → execute effects → persist.
+        // Returns false only when the controller is not loaded (the Presence
+        // monitor uses that to retry an observation instead of recording it).
         function dispatch(type, extra) {
             if (!controller.loaded)
-                return;
+                return false;
             var intent = extra || {};
             intent.type = type;
             var now = Date.now();
             var next = Machine.handle(controller.state, intent, now);
             if (next === controller.state)
-                return;
+                return true;
             controller.state = Machine.decorate(next);
             executeEffects();
             persist();
+            return true;
         }
 
         function tick() {
@@ -95,7 +110,11 @@ PlasmoidItem {
                 || next.pendingBreak !== controller.state.pendingBreak
                 || next.continueEnabled !== controller.state.continueEnabled
                 || next.deskDeadline !== controller.state.deskDeadline
-                || next.deskDue !== controller.state.deskDue;
+                || next.deskDue !== controller.state.deskDue
+                || next.paused !== controller.state.paused
+                || next.pausedRemainingMs !== controller.state.pausedRemainingMs
+                || next.deskPausedRemainingMs !== controller.state.deskPausedRemainingMs
+                || next.autoStartArmed !== controller.state.autoStartArmed;
             controller.state = Machine.decorate(next);
             if (changed) {
                 executeEffects();
@@ -130,6 +149,9 @@ PlasmoidItem {
                 case "chime":
                     root.chimeBridge.chime();
                     break;
+                case "notifyAutoStart":
+                    root.notifierBridge.notifyAutoStart(effects[i].preset);
+                    break;
                 }
             }
         }
@@ -146,7 +168,13 @@ PlasmoidItem {
                 // Desk fields restore by wall clock like the main deadline; a
                 // due prompt must survive too or a restart would hide the overlay.
                 deskDeadline: controller.state.deskDeadline,
-                deskDue: controller.state.deskDue === true
+                deskDue: controller.state.deskDue === true,
+                // A Paused Work Block must survive plasmashell restart/logout/
+                // reboot with its frozen remaining times (ADR-0003).
+                paused: controller.state.paused === true,
+                pausedRemainingMs: controller.state.pausedRemainingMs || 0,
+                deskPausedRemainingMs: controller.state.deskPausedRemainingMs || 0,
+                autoStartArmed: controller.state.autoStartArmed === true
             });
         }
 
@@ -184,6 +212,15 @@ PlasmoidItem {
             dispatch("deskAck");
         }
 
+        // Presence monitor intents (raw session lock state from the host).
+        // The return value tells the monitor whether the intent was applied.
+        function screenLocked() {
+            return dispatch("screenLocked");
+        }
+        function screenUnlocked() {
+            return dispatch("screenUnlocked");
+        }
+
         // Restore the persisted snapshot and settle it with one wall-clock tick:
         // a deadline crossed while away transitions immediately (overlay returns
         // mid-break, or lands in enabled-continue wait) without stretching time.
@@ -199,13 +236,21 @@ PlasmoidItem {
                 && typeof snap.preset.breakMin === "number" && isFinite(snap.preset.breakMin);
             var validCycle = snap && Number.isInteger(snap.cycleLength) && snap.cycleLength > 0;
             var validDesk = snap && typeof snap.deskDeadline === "number" && isFinite(snap.deskDeadline);
+            var validPausedRem = snap && typeof snap.pausedRemainingMs === "number"
+                && isFinite(snap.pausedRemainingMs) && snap.pausedRemainingMs >= 0;
+            var validDeskPausedRem = snap && typeof snap.deskPausedRemainingMs === "number"
+                && isFinite(snap.deskPausedRemainingMs) && snap.deskPausedRemainingMs >= 0;
+            // Pause fields only restore onto a Work Block; a work phase with no
+            // active deadline is legal only while paused (ADR-0003).
+            var paused = !!(snap && snap.paused === true && snap.phase === "work" && validPausedRem);
             if (snap
                 && typeof snap.phase === "string"
                 && typeof snap.deadline === "number" && isFinite(snap.deadline)
+                && (snap.phase !== "work" || snap.deadline > 0 || paused)
                 && ((snap.phase === "idle" || snap.phase === "disabled") || validPreset)) {
                 controller.state = Machine.decorate({
                     phase: snap.phase,
-                    deadline: snap.deadline || 0,
+                    deadline: paused ? 0 : (snap.deadline || 0),
                     preset: validPreset ? snap.preset : null,
                     completedBlocks: snap.completedBlocks || 0,
                     cycleLength: validCycle ? snap.cycleLength : (root.cfgCycleLength || Machine.CYCLE_LENGTH_DEFAULT),
@@ -217,6 +262,15 @@ PlasmoidItem {
                     deskEnabled: root.cfgDeskReminderEnabled,
                     deskMinutes: root.cfgDeskReminderMinutes,
                     defaultPreset: root.defaultPresetObj,
+                    // Config is rebuilt every snapshot; Presence/lock never persist.
+                    autoStartEnabled: root.cfgAutoStartEnabled,
+                    autoStartMinutes: root.cfgAutoStartMinutes,
+                    autoStartArmed: snap.autoStartArmed === true,
+                    presenceSince: 0,
+                    locked: false,
+                    paused: paused,
+                    pausedRemainingMs: paused ? snap.pausedRemainingMs : 0,
+                    deskPausedRemainingMs: paused && validDeskPausedRem ? snap.deskPausedRemainingMs : 0,
                     effects: []
                 });
             } else {
@@ -225,6 +279,11 @@ PlasmoidItem {
                 controller.state.deskEnabled = root.cfgDeskReminderEnabled;
                 controller.state.deskMinutes = root.cfgDeskReminderMinutes;
                 controller.state.defaultPreset = root.defaultPresetObj;
+                controller.state.autoStartEnabled = root.cfgAutoStartEnabled;
+                controller.state.autoStartMinutes = root.cfgAutoStartMinutes;
+                controller.state.autoStartArmed = false;
+                controller.state.presenceSince = 0;
+                controller.state.locked = false;
             }
             controller.loaded = true;
             tick();
@@ -258,6 +317,8 @@ PlasmoidItem {
     readonly property int cfgDefaultPreset: Plasmoid.configuration.defaultPreset
     readonly property bool cfgDeskReminderEnabled: Plasmoid.configuration.deskReminderEnabled
     readonly property int cfgDeskReminderMinutes: Plasmoid.configuration.deskReminderMinutes
+    readonly property bool cfgAutoStartEnabled: Plasmoid.configuration.autoStartEnabled
+    readonly property int cfgAutoStartMinutes: Machine.autoStartWindowMinutes(Plasmoid.configuration.autoStartMinutes)
 
     // Six-slot view of the stored presets (machine normalization re-seeds lost
     // Built-ins on every read).
@@ -294,6 +355,23 @@ PlasmoidItem {
         if (controller.loaded)
             controller.state.deskMinutes = cfgDeskReminderMinutes;
     }
+    onCfgAutoStartEnabledChanged: {
+        if (controller.loaded)
+            controller.state.autoStartEnabled = cfgAutoStartEnabled;
+    }
+    onCfgAutoStartMinutesChanged: {
+        if (controller.loaded)
+            controller.state.autoStartMinutes = cfgAutoStartMinutes;
+    }
+
+    // Losing the lock source must stop auto-start immediately: close the
+    // Presence window and treat the session as away until a fresh observation.
+    onLockSourceAvailableChanged: {
+        if (!controller.loaded)
+            return;
+        if (!lockSourceAvailable)
+            controller.dispatch("presenceUnavailable");
+    }
 
     Component.onCompleted: controller.restore()
 
@@ -304,6 +382,16 @@ PlasmoidItem {
         repeat: true
         running: controller.loaded && controller.phase !== "disabled"
         onTriggered: controller.tick()
+    }
+
+    // Dedicated Presence heartbeat: auto-start is checked only from idle or
+    // Disabled, so the phase heartbeat above stays Disabled-free as before.
+    Timer {
+        interval: 1000
+        repeat: true
+        running: controller.loaded && (controller.phase === "idle" || controller.phase === "disabled")
+                 && root.lockSourceAvailable
+        onTriggered: controller.dispatch("presenceTick")
     }
 
     // ---------------------------------------------------------- effect adapters
@@ -334,6 +422,43 @@ PlasmoidItem {
         }
     }
     readonly property var chimeBridge: chimeLoader.status === Loader.Ready && chimeLoader.item ? chimeLoader.item : chimeBridgeFallback
+
+    // Presence monitor behind a Loader (SPEC-003): the session-bus screen saver
+    // signal plus a one-second poll. A missing module leaves the monitor
+    // unavailable and never touches manual behavior.
+    Loader {
+        id: presenceLoader
+        source: "PresenceMonitor.qml"
+        // qmllint disable missing-property
+        onLoaded: item.ctrl = controller
+        // qmllint enable missing-property
+        onStatusChanged: {
+            if (status === Loader.Error)
+                console.warn("pomodoro: presence monitor unavailable, auto-start and lock pause are off");
+        }
+    }
+    QtObject {
+        id: presenceMonitorFallback
+        readonly property bool lockSourceAvailable: false
+    }
+    readonly property var presenceMonitor: presenceLoader.status === Loader.Ready && presenceLoader.item
+        ? presenceLoader.item : presenceMonitorFallback
+    readonly property bool lockSourceAvailable: presenceMonitor.lockSourceAvailable === true
+
+    // Auto-start notification behind a Loader (SPEC-003): one informational
+    // desktop notification, no actions and no sound.
+    Loader {
+        id: notifierLoader
+        source: "Notifier.qml"
+    }
+    QtObject {
+        id: notifierFallback
+        function notifyAutoStart(presetLabel) {
+            console.warn("pomodoro: notification module unavailable, auto-start notice skipped");
+        }
+    }
+    readonly property var notifierBridge: notifierLoader.status === Loader.Ready && notifierLoader.item
+        ? notifierLoader.item : notifierFallback
 
     // The break overlay lives in this process (LayerShellQt overlay surface);
     // its buttons call the controller directly — no IPC anywhere.

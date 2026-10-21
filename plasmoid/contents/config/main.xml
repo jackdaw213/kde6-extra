@@ -28,14 +28,26 @@
       <default>30</default>
     </entry>
 
+    <!-- Presence-driven auto-start (SPEC-003): after this many unlocked
+         minutes with no timing phase, start the Default Preset. The machine
+         clamps the window to 1-60 and falls back to 5 on junk. -->
+    <entry name="autoStartEnabled" type="Bool">
+      <default>true</default>
+    </entry>
+    <entry name="autoStartMinutes" type="Int">
+      <default>5</default>
+    </entry>
+
     <!-- Cycle length: every Nth Work Block's Break is a Large Break. Default 4. -->
     <entry name="cycleLength" type="Int">
       <default>4</default>
     </entry>
 
     <!-- Machine state snapshot (phase, deadline, preset, completedBlocks, cycleLength,
-         pendingBreak, largeBreak, deskDeadline, deskDue) written on every state
-         change; wall-clock restore on load. -->
+         pendingBreak, largeBreak, deskDeadline, deskDue, paused, pausedRemainingMs,
+         deskPausedRemainingMs, autoStartArmed) written on every state change;
+         wall-clock restore on load. Presence and the raw lock state are never
+         persisted. -->
     <entry name="stateSnapshot" type="String">
       <default></default>
     </entry>

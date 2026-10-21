@@ -169,3 +169,113 @@ Feature: Pomodoro panel widget
   Scenario: Pleasant short chime
     Given a Break starts or the Desk Overlay appears
     Then a bundled soft piano-style chime plays once, lasting roughly 2 to 3 seconds
+
+  Feature extension: Presence-driven auto-start and lock-paused Work Blocks (SPEC-003)
+
+  Scenario: Auto-start after the Presence window
+    Given the widget is idle and auto-start is on with a 5 minute window
+    When the session stays unlocked for 5 minutes
+    Then a Work Block of the Default Preset starts
+    And one desktop notification names the started preset
+    And no chime plays
+
+  Scenario: Presence window resets on lock
+    Given the widget is idle and 3 minutes of the Presence window have elapsed
+    When the session locks
+    Then the Presence window is reset
+    And no Work Block starts
+
+  Scenario: Auto-start respects a manual Disable
+    Given I chose "Disable for now" for a meeting
+    When the session stays unlocked for 30 minutes
+    Then no Work Block starts
+
+  Scenario: Auto-start re-arms after a lock
+    Given I chose "Disable for now" and the session has since locked once
+    When the session stays unlocked for 5 minutes after that lock
+    Then a Work Block of the Default Preset starts
+
+  Scenario: Auto-start never interrupts timing
+    Given a Work Block, a Break, or the finished-break wait is active
+    When the session stays unlocked for longer than the Presence window
+    Then no auto-start occurs
+
+  Scenario: Auto-start uses the Default Preset
+    Given auto-start is on and the star marks the 25/5 preset
+    When the Presence window elapses
+    Then a 25/5 Work Block starts
+
+  Scenario: Missing star falls back
+    Given auto-start is on and the star is missing or invalid
+    When the Presence window elapses
+    Then a 50/10 Work Block starts
+
+  Scenario: Lock pauses the Work Block
+    Given a Work Block with 20 minutes remaining
+    When the session locks
+    Then the Work Block remaining time freezes at 20 minutes
+    And the desk countdown freezes
+
+  Scenario: Unlock resumes the Work Block
+    Given a Paused Work Block with 20 minutes remaining
+    When the session unlocks 30 minutes later
+    Then the Work Block resumes with 20 minutes remaining
+    And the desk countdown resumes from its frozen time
+
+  Scenario: A delayed break survives the pause
+    Given a delayed Work Block with a pending Break
+    When the session locks and unlocks
+    Then the pending Break is still pending
+
+  Scenario: A Delay intent on a paused block extends the frozen time
+    Given a paused Work Block with 4 minutes remaining and a pending Break
+    When a Delay intent reaches it while it is paused
+    Then the frozen remaining time becomes 9 minutes
+    And unlocking resumes the Work Block with that longer remaining time
+
+  Scenario: A lock at the work deadline does not pause a finished block
+    Given a Work Block whose deadline has been reached
+    When the session locks
+    Then the Work Block does not pause
+    And the Break starts at the original expiry on the next tick
+
+  Scenario: A desk countdown due at the lock instant keeps its prompt
+    Given a Work Block whose desk countdown reaches zero as the session locks
+    When the session unlocks
+    Then the Desk Overlay appears on the next tick
+    And the desk countdown is not restarted at a full interval
+
+  Scenario: A Break is never paused
+    Given a Break with 8 minutes remaining
+    When the session locks for 10 minutes
+    Then the Break deadline is unchanged
+    And after unlock the overlay waits with Continue enabled
+
+  Scenario: A Paused Work Block survives a restart
+    Given a Paused Work Block with 12 minutes remaining
+    When plasmashell restarts
+    Then the Work Block is still paused with 12 minutes remaining
+    When the session unlocks
+    Then the Work Block resumes with 12 minutes remaining
+
+  Scenario: Auto-start can be switched off
+    Given the auto-start switch is off in the card
+    When the session stays unlocked for an hour
+    Then no Work Block starts
+
+  Scenario: Auto-start minutes stay in range
+    Given the auto-start delay is edited in the card
+    When the value is outside 1 to 60
+    Then the stored value stays within 1 to 60
+
+  Scenario: Lock source unavailable
+    Given the lock state cannot be read
+    Then auto-start and Work Block pause are off
+    And manual start, continue, skip, disable, and enable still work
+    And a Work Block already paused stays frozen until Disable and Enable
+
+  Scenario: The lock source recovers
+    Given a temporary lock-source outage cleared the Presence window
+    When the source returns while the session stays unlocked
+    Then a fresh Presence window opens
+    And after the window Auto-start can fire again

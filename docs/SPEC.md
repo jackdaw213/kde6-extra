@@ -132,7 +132,7 @@ Feature: Pomodoro panel widget
 
 - **Shape**: a single Plasma 6 Plasmoid (QML 6). The break overlay is owned by the widget itself and rendered on a Wayland layer-shell surface at the Overlay layer via LayerShellQt (ADR-0001 as amended by ADR-0002), so its buttons call the machine in-process — no IPC anywhere. The KWin-script approach was abandoned after live probes proved no intent channel can exist from KWin declarative scripts (see ADR-0002).
 - **State machine**: all domain behavior (phases, deadlines, cycle, presets) lives in one pure QML/JS module — `pomodoro-machine.js` — with no Qt/Plasma imports. Intents in (`startPreset`, `tick`, `skipBreakConfirmed`, `delayBreak`, `startBreakNow`, `disable`, `enable`), state snapshot out. Pure means it is the single test seam (below).
-- **Time**: every phase stores an absolute wall-clock deadline (epoch ms), never a countdown. Remaining time is `deadline − now`. Persistence = writing the deadline into the Plasmoid config; restoration = recompute on load. A deadline already passed at restore time transitions immediately (work expiry → break; break expiry → enabled-continue wait).
+- **Time**: every phase stores an absolute wall-clock deadline (epoch ms), never a countdown. Remaining time is `deadline − now`. Persistence = writing the deadline into the Plasmoid config; restoration = recompute on load. A deadline already passed at restore time transitions immediately (work expiry → break; break expiry → enabled-continue wait). *(Amended by SPEC-003 and ADR-0003: a Work Block paused by a screen lock has no active deadline and shifts its deadline by the paused duration on resume. Breaks keep this wall-clock rule.)*
 - **Overlay contract**: the overlay is a widget-owned window bound to the controller's state: rest message, remaining mm:ss (from the wall-clock deadline, restart-surviving), Continue (disabled until break deadline, grayed), Skip (two-click confirm-guarded), Delay 5. Button handlers dispatch machine intents directly.
 - **Media pause**: at break start, enumerate MPRIS2 players on the session bus and call Pause on each. No resume path exists anywhere.
 - **Chime**: freedesktop sound-theme event (libcanberra or `KNotification`), played only at break start. *(Superseded by SPEC-002: bundled soft piano-style Ogg in the plasmoid, at break start and Desk Overlay.)*
@@ -151,7 +151,7 @@ Feature: Pomodoro panel widget
 ## Out of Scope
 
 - Multi-monitor overlay spreading (single display).
-- Wayland screen-lock integration or kiosk-grade tamper-proofing.
+- Lock sources beyond the screen saver and logind, or kiosk-grade tamper-proofing.
 - Statistics/history of past blocks.
 - Auto-resuming media (explicitly never).
 - Non-KDE environments.
@@ -159,4 +159,5 @@ Feature: Pomodoro panel widget
 ## Further Notes
 
 - All decisions trace to the grilling session; glossary terms (Work Block, Break, Preset, Large Break, Cycle, Skip, Delay Break, Start Break Now, Disabled for now, Media Pause, Wall-clock deadline) are defined in `CONTEXT.md` and used here deliberately.
+- SPEC-003 adds Presence-driven auto-start and lock-paused Work Blocks. It supersedes the wall-clock guarantee for a paused Work Block only.
 - Overlay language: the overlay announces "Rest time" with remaining break time.

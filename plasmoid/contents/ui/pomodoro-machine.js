@@ -15,6 +15,7 @@ function largeBreakMinutes(breakMin) {
 var CYCLE_LENGTH_DEFAULT = 4; // three normal breaks, then a large one
 
 var DESK_MINUTES_DEFAULT = 30; // Desk Reminder interval when the host supplies garbage
+var AUTO_START_MINUTES_DEFAULT = 5; // Presence window when the host supplies garbage
 
 // Canonical Built-in presets — always occupy slots 0-2 of the six-slot preset
 // storage (SPEC-002); a lost or garbled slot is re-seeded from here.
@@ -144,6 +145,16 @@ function initialState() {
         deskEnabled: false,
         deskMinutes: DESK_MINUTES_DEFAULT,
         defaultPreset: null,  // host-resolved star preset; null = built-in default
+        // Presence (SPEC-003): host-supplied config, machine-owned window/pause.
+        // presenceSince 0 = no window; only the lock/unlock intents touch it.
+        autoStartEnabled: false,
+        autoStartMinutes: 5,
+        autoStartArmed: false,
+        presenceSince: 0,
+        locked: false,
+        paused: false,
+        pausedRemainingMs: 0,
+        deskPausedRemainingMs: 0,
         effects: []
     });
 }
@@ -179,7 +190,9 @@ function handle(state, intent, now) {
             return withEffects(delayWork(state, now, 5 * MIN), []); // extend again; no rollback
         return state;
     case "startBreakNow":
-        if (state.phase !== "work")
+        // A Paused Work Block is not running: ending it would discard the frozen
+        // work the user still owes. Resume it first (unlock), then end it.
+        if (state.phase !== "work" || state.paused === true)
             return state;
         return enterBreak(state, now);
     case "deskAck":
@@ -209,9 +222,137 @@ function handle(state, intent, now) {
         // slots); the host resolves the config index and supplies the preset —
         // null/garbage falls back to the built-in default via normalization.
         return enterWork(state, state.defaultPreset || DEFAULT_PRESET, now, []);
+    case "screenLocked":
+        return screenLocked(state, now);
+    case "screenUnlocked":
+        return screenUnlocked(state, now);
+    case "presenceTick":
+        return presenceTick(state, now);
+    case "presenceUnavailable":
+        return presenceUnavailable(state);
     default:
         return state;
     }
+}
+
+// Screen lock pauses only a running, unpaused Work Block: its remaining work
+// and desk times are frozen and both deadlines stop (SPEC-003 / ADR-0003).
+// A Break keeps its wall-clock deadline; the wait has none to keep.
+function screenLocked(state, now) {
+    // A Disabled phase arms from a real lock even when an earlier source outage
+    // already marked the machine locked. Do this before the identity guard, or
+    // the first real lock after the outage would never re-arm Auto-start.
+    if (state.phase === "disabled" && state.autoStartArmed !== true) {
+        var armed = Object.assign({}, state);
+        armed.locked = true;
+        armed.presenceSince = 0;
+        armed.autoStartArmed = true;
+        armed.effects = [];
+        return decorate(armed);
+    }
+    if (state.locked === true) {
+        // A source outage marks the session locked but leaves a running Work
+        // Block running (pause is off while the source is unreadable). The
+        // first real observation after recovery must still freeze it.
+        if (state.phase !== "work" || state.paused === true || state.deadline <= now)
+            return state;
+    }
+    var st = Object.assign({}, state);
+    st.locked = true;
+    st.presenceSince = 0;
+    st.effects = [];
+    // A block whose deadline already passed is finished, not paused: leave the
+    // deadline alone so the next tick starts the Break at the original expiry,
+    // and the locked time counts as Break time (SPEC-003).
+    if (st.phase === "work" && st.paused !== true && st.deadline > now) {
+        st.paused = true;
+        st.pausedRemainingMs = Math.max(0, st.deadline - now);
+        // A due desk prompt has already stopped its countdown; keep the prompt
+        // and freeze nothing for it. A deadline reached at the lock instant but
+        // not yet observed by a tick freezes as 1 ms, so the prompt still fires
+        // on the first resume tick instead of becoming a fresh full interval.
+        st.deskPausedRemainingMs = (st.deskDue === true || st.deskEnabled !== true || !st.deskDeadline)
+            ? 0
+            : Math.max(1, st.deskDeadline - now);
+        st.deadline = 0;
+        st.deskDeadline = 0;
+    }
+    return decorate(st);
+}
+
+// The Presence window is config: a hostile value rounds, clamps 1-60, and
+// falls back to 5. It never yields a non-positive or unbounded window.
+function autoStartWindowMinutes(v) {
+    var n = Math.round(Number(v));
+    if (!isFinite(n))
+        return AUTO_START_MINUTES_DEFAULT;
+    return Math.min(60, Math.max(1, n));
+}
+
+// The only automatic-start path (SPEC-003): sustained Presence from idle or
+// Disabled. Timing phases and the finished-break wait are never interrupted;
+// Disabled additionally requires a screen lock to have re-armed auto-start.
+function presenceTick(state, now) {
+    if (state.autoStartEnabled !== true || state.locked === true)
+        return state;
+    if (state.phase !== "idle" && state.phase !== "disabled")
+        return state;
+    if (state.phase === "disabled" && state.autoStartArmed !== true)
+        return state;
+    var since = Number(state.presenceSince);
+    if (!isFinite(since) || since <= 0 || since > now)
+        return state;
+    if (now - since < autoStartWindowMinutes(state.autoStartMinutes) * MIN)
+        return state;
+    var preset = normalizePreset(state.defaultPreset || DEFAULT_PRESET);
+    var effects = [];
+    // Defensive: a restored idle state can still carry a due desk prompt.
+    if (state.deskDue === true)
+        effects.push({ type: "hideOverlay" });
+    effects.push({ type: "notifyAutoStart",
+                   preset: derivedLabel(preset.workMin, preset.breakMin) });
+    return enterWork(state, preset, now, effects);
+}
+
+// The lock source failed while the machine was loaded: close the Presence
+// window and treat the session as away until a fresh observation arrives, so a
+// stale window cannot auto-start after an outage. Host-driven.
+function presenceUnavailable(state) {
+    if (state.locked === true && state.presenceSince === 0)
+        return state;
+    var st = Object.assign({}, state);
+    st.locked = true;
+    st.presenceSince = 0;
+    st.effects = [];
+    return decorate(st);
+}
+
+// Unlock opens a fresh Presence window and resumes a Paused Work Block from the
+// frozen remaining times. Repeated observations are identity no-ops (a monitor
+// poll must never restart the window); the first observation after a restore is
+// the one that opens it.
+function screenUnlocked(state, now) {
+    if (state.locked !== true && state.presenceSince > 0)
+        return state;
+    var st = Object.assign({}, state);
+    st.locked = false;
+    st.presenceSince = now;
+    st.effects = [];
+    if (st.phase === "work" && st.paused === true) {
+        var deskRemaining = (st.deskPausedRemainingMs > 0)
+            ? st.deskPausedRemainingMs
+            : saneMinutes(st.deskMinutes, DESK_MINUTES_DEFAULT) * MIN;
+        st.paused = false;
+        st.deadline = now + Math.max(0, st.pausedRemainingMs);
+        // A restored due prompt stays due; otherwise the desk countdown resumes
+        // from its frozen time (or a full interval when none was frozen).
+        st.deskDeadline = (st.deskDue === true || st.deskEnabled !== true)
+            ? 0
+            : now + deskRemaining;
+        st.pausedRemainingMs = 0;
+        st.deskPausedRemainingMs = 0;
+    }
+    return decorate(st);
 }
 
 function tick(state, now) {
@@ -222,6 +363,9 @@ function tick(state, now) {
     var acc = [];
     for (var guard = 0; guard < 10; guard++) {
         if (st.phase === "disabled" || st.phase === "idle") break;
+        // A Paused Work Block has no active deadline; it must never expire or
+        // step the desk countdown behind the lock screen (SPEC-003).
+        if (st.phase === "work" && st.paused === true) break;
         if (st.phase === "work" && now >= st.deadline) {
             st = enterBreak(st, st.deadline); // anchored at the expiry instant
             acc = acc.concat(st.effects);
@@ -280,6 +424,9 @@ function enterWait(state) {
     st.phase = "wait";
     st.deadline = 0;
     st.continueEnabled = true;
+    st.paused = false;
+    st.pausedRemainingMs = 0;
+    st.deskPausedRemainingMs = 0;
     st.effects = [];
     return decorate(st);
 }
@@ -301,6 +448,10 @@ function disable(state) {
     st.largeBreak = false;
     st.deskDeadline = 0;
     st.deskDue = false;
+    st.paused = false;
+    st.pausedRemainingMs = 0;
+    st.deskPausedRemainingMs = 0;
+    st.autoStartArmed = false;
     return decorate(st);
 }
 
@@ -311,7 +462,11 @@ var DEFAULT_PRESET = BUILTIN_SLOTS[0];
 function delayWork(state, now, extensionMs) {
     var st = Object.assign({}, state);
     st.phase = "work";
-    st.deadline = now + extensionMs;
+    // A paused block has no live deadline: the extension joins the frozen
+    // remaining time and waits with it for the unlock (SPEC-003).
+    st.deadline = st.paused === true ? 0 : now + extensionMs;
+    if (st.paused === true)
+        st.pausedRemainingMs = Math.max(0, st.pausedRemainingMs) + extensionMs;
     st.pendingBreak = true;
     st.completedBlocks = state.phase === "break"
         ? state.completedBlocks - 1   // the break never happened
@@ -346,6 +501,9 @@ function enterBreak(state, atInstant) {
     // prompt is superseded and the countdown restarts with the next work phase.
     st.deskDue = false;
     st.deskDeadline = 0;
+    st.paused = false;
+    st.pausedRemainingMs = 0;
+    st.deskPausedRemainingMs = 0;
     st.effects = effects;
     return decorate(st);
 }
@@ -364,6 +522,11 @@ function enterWork(state, preset, now, effects) {
     st.deskDeadline = st.deskEnabled === true
         ? now + saneMinutes(st.deskMinutes, DESK_MINUTES_DEFAULT) * MIN
         : 0;
+    // A new Work Block ends any pause and consumes the Presence window.
+    st.paused = false;
+    st.pausedRemainingMs = 0;
+    st.deskPausedRemainingMs = 0;
+    st.presenceSince = 0;
     st.effects = effects;
     return decorate(st);
 }
