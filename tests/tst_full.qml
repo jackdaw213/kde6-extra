@@ -1202,4 +1202,130 @@ TestCase {
                "the available hint explains the Presence rule instead");
         f.destroy();
     }
+
+    // --- short host (operator: the real popup clips the card's bottom) ---
+    // plasmashell sizes the popup once and KEEPS that saved height (421px), so
+    // on a real desktop the host can be SHORTER than the card's (correct)
+    // natural implicitHeight — with SPEC-003's Auto-start row + hint the
+    // settings page outgrew it. The original harness handed the card its
+    // implicitHeight, which is why the clip never reproduced here; these
+    // tests drive a short card explicitly, and the window test below drives
+    // the real host viewport. A short host must be scrollable rather than
+    // clip the bottom controls away.
+
+    function test_cardScroller_shortHostScrollsToBottomControls() {
+        let f = makeFull(seedJson, 0);
+        let scroller = findChild(f, "cardScroller");
+        verify(scroller !== null, "the card content must live in a scroll surface");
+        findChild(f, "settingsGear").clicked();
+        wait(50);
+        verify(scroller.contentWidth <= scroller.width + 0.5,
+               "horizontal must never scroll (contentWidth " + scroller.contentWidth
+               + " > viewport " + scroller.width + ")");
+        // Drive the host the way plasmashell does: its saved height wins over
+        // the card's natural height (the harness's usual binding must yield).
+        let natural = f.implicitHeight;
+        f.height = natural - 80;
+        wait(50);
+        verify(f.height < natural, "the short host must be shorter than the card content");
+        verify(scroller.contentHeight > scroller.height + 0.5,
+               "a short host must expose scrollable content (" + scroller.contentHeight
+               + " vs viewport " + scroller.height + ")");
+        // At the top the bottom-most settings control sits below the viewport
+        // edge — the clip the operator saw in the real popup.
+        scroller.contentY = 0;
+        wait(30);
+        let hint = findChild(f, "autoStartHint");
+        verify(hint !== null);
+        verify(hint.mapToItem(f, 0, hint.height).y > f.height,
+               "autoStartHint must start below the short viewport bottom (bottom "
+               + hint.mapToItem(f, 0, hint.height).y + " vs viewport " + f.height + ")");
+        // Scrolled to the very bottom, the last content pixel is inside the
+        // viewport: nothing is clipped away anymore.
+        scroller.contentY = scroller.contentHeight - scroller.height;
+        wait(50);
+        verify(scroller.contentY > 0, "the short host must actually scroll");
+        verify(hint.mapToItem(f, 0, hint.height).y <= f.height + 0.5,
+               "scrolled to the bottom, autoStartHint must be inside the viewport (bottom "
+               + hint.mapToItem(f, 0, hint.height).y + " > viewport " + f.height + ")");
+        f.destroy();
+    }
+
+    function test_cardScroller_naturalHeightDoesNotScroll() {
+        // The natural size is still the contract: height bound to implicitHeight
+        // (the old harness case) leaves nothing to scroll, so no bar appears and
+        // no content pixel is reserved for one.
+        let f = makeFull(seedJson, 0);
+        let scroller = findChild(f, "cardScroller");
+        verify(scroller !== null, "the card content must live in a scroll surface");
+        findChild(f, "settingsGear").clicked();
+        wait(50);
+        compare(f.height, f.implicitHeight, "the harness keeps the natural height");
+        verify(scroller.contentHeight <= scroller.height + 0.5,
+               "natural height must not be scrollable (content " + scroller.contentHeight
+               + " vs viewport " + scroller.height + ")");
+        compare(scroller.contentY, 0, "nothing may scroll at the natural height");
+        f.destroy();
+    }
+
+    function test_cardScroller_pageSwitchResetsScroll() {
+        // Both pages share one scroll surface; a gear switch must show the top
+        // of the other page, not leave its header scrolled out of view.
+        let f = makeFull(seedJson, 0);
+        let scroller = findChild(f, "cardScroller");
+        findChild(f, "settingsGear").clicked();
+        wait(50);
+        f.height = f.implicitHeight - 80;
+        wait(50);
+        scroller.contentY = scroller.contentHeight - scroller.height;
+        verify(scroller.contentY > 0, "the short host must scroll before the switch");
+        f.settingsOpen = false;
+        wait(50);
+        compare(scroller.contentY, 0,
+                "switching pages must reset the scroll to the top");
+        f.destroy();
+    }
+
+    function test_cardScroller_hostWindowShorterThanCard_scrolls() {
+        // The card root keeps its NATURAL height, but the real viewport is the
+        // popup WINDOW. A host shorter than the card must shrink the scroll
+        // surface to the window: anchors.fill:parent sized the Flickable to the
+        // card root, so contentHeight == height and the bottom clipped silently
+        // in the real popup. This test drives the shared host window, not the
+        // card's own height.
+        let f = makeFull(seedJson, 0);
+        let scroller = findChild(f, "cardScroller");
+        verify(scroller !== null, "the card content must live in a scroll surface");
+        findChild(f, "settingsGear").clicked();
+        wait(50);
+        let savedHeight = suite.hostWindow.height;
+        compare(savedHeight, 900, "the shared host starts at its harness height");
+        suite.hostWindow.height = 365;
+        wait(100);
+        verify(scroller.height <= 365.5,
+               "the scroll surface must follow the host window height, got "
+               + scroller.height + " for a 365px window");
+        verify(scroller.contentHeight > scroller.height + 0.5,
+               "a host shorter than the card must expose scrollable content ("
+               + scroller.contentHeight + " vs viewport " + scroller.height + ")");
+        scroller.contentY = 0;
+        wait(30);
+        let hint = findChild(f, "autoStartHint");
+        verify(hint !== null);
+        verify(hint.mapToItem(f, 0, 0).y > scroller.height + 0.5,
+               "at the top the Auto-start hint must start below the window viewport (top "
+               + hint.mapToItem(f, 0, 0).y + " vs viewport " + scroller.height + ")");
+        scroller.contentY = scroller.contentHeight - scroller.height;
+        wait(50);
+        verify(scroller.contentY > 0, "the shorter window must actually scroll");
+        verify(hint.mapToItem(f, 0, hint.height).y <= scroller.height + 0.5,
+               "scrolled to the bottom the Auto-start hint must be inside the window "
+               + "viewport (bottom " + hint.mapToItem(f, 0, hint.height).y
+               + " vs viewport " + scroller.height + ")");
+        // Restore the shared host before dropping the card (later tests rely on
+        // the 900px harness height even though this test is last).
+        suite.hostWindow.height = savedHeight;
+        wait(100);
+        f.destroy();
+    }
 }

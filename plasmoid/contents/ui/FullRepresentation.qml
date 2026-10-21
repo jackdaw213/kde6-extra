@@ -28,7 +28,10 @@
  * The card keeps ONE size: the frame height
  * is the taller page's real implicitHeight, so toggling the gear,
  * starting/stopping a block or editing a preset never resizes the card or
- * moves the gear. The Configure dialog no longer manages presets; the old
+ * moves the gear. That is the card's NATURAL height; the real popup keeps a
+ * SAVED height, and when the host is shorter than the content the card
+ * scrolls vertically (cardScroller) instead of clipping its bottom controls.
+ * The Configure dialog no longer manages presets; the old
  * Custom one-off row is gone (user presets cover arbitrary rhythms).
  *
  * Round-4 operator-feedback hardening: grid cells are pinned to ONE equal
@@ -88,6 +91,10 @@ Item {
     // visible — a hidden page would fall out of the layout and re-height the
     // card frame.
     property bool settingsOpen: false
+
+    // Both pages share one scroll surface; show the top of the page being
+    // opened instead of leaving the header scrolled out of view.
+    onSettingsOpenChanged: cardScroller.contentY = 0
 
     // Config writes travel out through signals; main.qml persists them into the
     // kcfg database. (Keeps this component free of Plasmoid imports and thus
@@ -330,6 +337,14 @@ Item {
     // ≤ width), not by this arithmetic.
     implicitWidth: Kirigami.Units.gridUnit * 21
 
+    // ONE frame margin (0.5 grid units) around the content, shared by the
+    // natural frame height and the scroll surface's content height so the
+    // scrolled card has exactly the margins of the natural one. Shrinking it
+    // from 0.75 keeps the natural card (~436px at the 18px reference unit)
+    // below the observed 441px popup, so the real popup shows everything
+    // without scrolling.
+    readonly property real frameMargin: Kirigami.Units.gridUnit * 0.5
+
     // ONE frame for both pages: the column's height is dominated by whichever
     // page is naturally taller (the settings page — the main page is pure
     // content since round 6: fixed-height cells, no flex absorber), and both
@@ -339,21 +354,82 @@ Item {
     // pixel metrics, so real plasmashell fonts/units can only shift the
     // result, not desynchronize it from what is actually on the card. The
     // reserved hint heights (reservedHintHeight) keep the measured value
-    // width-independent from the first pass on.
-    implicitHeight: column.implicitHeight + Kirigami.Units.gridUnit * 1.5
+    // width-independent from the first pass on. This stays the card's NATURAL
+    // height even when the host is shorter: the observed real popup is 441px
+    // (an older saved popup is 421px), while this natural frame is ~436px at
+    // the 18px reference unit — the observed popup fits without scrolling,
+    // and any shorter host scrolls the content instead (cardScroller).
+    implicitHeight: column.implicitHeight + full.frameMargin * 2
 
     // Exposed for the headless tests (structure + labels are asserted there).
     readonly property alias presetGrid: grid
     readonly property alias presetCells: cellRepeater
     readonly property alias userEditorsRepeater: userEditors
 
-    ColumnLayout {
-        id: column
-        anchors {
-            fill: parent
-            margins: Kirigami.Units.gridUnit * 0.75
+    // Short-host scroll surface. plasmashell sizes the popup once and keeps
+    // that saved height, so the host can be SHORTER than the card's natural
+    // implicitHeight (SPEC-003's Auto-start row + hint grew the settings page
+    // past the earlier 421px saved popup; the observed popup is 441px while
+    // the natural card is ~436px, so it now fits). The card ROOT keeps the
+    // natural implicitHeight, but the visible viewport belongs to the host
+    // WINDOW (or its content item) — the Flickable must follow that viewport,
+    // not the taller card root, or contentHeight == height and nothing scrolls
+    // (the silent clip this replaces). The constant frame and fixed grid stay
+    // untouched and only the SAME content's reachability changes when the
+    // viewport is shorter. Horizontal never scrolls (contentWidth is the
+    // viewport width), and the vertical bar is overlaid — no width is reserved
+    // for it, because the 21gu editor row has only ~3px of headroom. At or
+    // above the natural height contentHeight == height, so nothing scrolls
+    // and the bar stays off.
+    Flickable {
+        id: cardScroller
+
+        objectName: "cardScroller"
+
+        // The smallest POSITIVE of the card, the containing window and the
+        // window's content item: enough candidates to follow the real popup
+        // viewport, ignoring 0/undefined/NaN (creation pass, windowless embed)
+        // so the surface never collapses to zero while the card has a size.
+        readonly property real hostViewportHeight: {
+            let win = Window.window;
+            let candidates = [
+                parent ? parent.height : 0,
+                win ? win.height : Infinity,
+                win && win.contentItem ? win.contentItem.height : Infinity
+            ];
+            let result = Infinity;
+            for (let i = 0; i < candidates.length; i++) {
+                let h = candidates[i];
+                if (typeof h === "number" && isFinite(h) && h > 0)
+                    result = Math.min(result, h);
+            }
+            return isFinite(result) ? result : (parent ? parent.height : 0);
         }
-        spacing: Kirigami.Units.smallSpacing
+
+        width: parent.width
+        height: hostViewportHeight
+        contentWidth: width
+        contentHeight: column.implicitHeight + 2 * full.frameMargin
+        clip: true
+        boundsBehavior: Flickable.StopAtBounds
+
+        QQC2.ScrollBar.vertical: QQC2.ScrollBar {
+            // A short popup must SHOW that there is more, not clip silently:
+            // the bar is on exactly while the content overflows the viewport.
+            policy: cardScroller.contentHeight > cardScroller.height + 0.5
+                    ? QQC2.ScrollBar.AlwaysOn
+                    : QQC2.ScrollBar.AlwaysOff
+        }
+
+        ColumnLayout {
+            id: column
+
+            // Positioned, not anchored: a Flickable's content item scrolls its
+            // children by contentX/contentY, which anchors would fight.
+            x: full.frameMargin
+            y: full.frameMargin
+            width: cardScroller.width - 2 * full.frameMargin
+            spacing: Kirigami.Units.smallSpacing
 
             // --------------------------------------------- header: status + gear
             // One shared header row for both pages: status on the left, settings
@@ -1043,4 +1119,5 @@ Item {
                 }
             }
         }
+    }
 }
