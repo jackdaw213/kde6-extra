@@ -279,3 +279,51 @@ Feature: Pomodoro panel widget
     When the source returns while the session stays unlocked
     Then a fresh Presence window opens
     And after the window Auto-start can fire again
+
+  Feature extension: Working-hours gate for Auto-start (SPEC-004)
+
+  Scenario: Auto-start fires inside Working hours
+    Given the widget is idle and auto-start is on with a 5 minute window
+    When the Presence window elapses at 10:00 local time
+    Then a Work Block of the Default Preset starts
+
+  Scenario: Auto-start does not fire outside Working hours
+    Given the widget is idle and auto-start is on with a 5 minute window
+    When the Presence window elapses at 08:00 local time
+    Then no Work Block starts
+    And the Presence window stays open
+
+  Scenario: Presence accrued before 9:00 counts
+    Given the widget is idle and auto-start is on with a 5 minute window
+    When the session unlocks at 08:56 local time
+    And the Presence window has elapsed by 09:00 local time
+    Then a Work Block of the Default Preset starts at 09:00
+
+  Scenario: The 17:00 edge is exclusive and defers to the next morning
+    Given the widget is idle and auto-start is on with a 5 minute window
+    When the Presence window elapses at 17:00 local time
+    Then no Work Block starts
+    When the window is still elapsed the next morning at 09:00 local time
+    Then a Work Block of the Default Preset starts
+
+  Scenario: A block started before 17:00 is not clipped
+    Given the Presence window elapses at 16:59 local time
+    Then the Work Block starts with its full work length
+    And it is not cut short when 17:00 passes
+
+  Scenario: The re-armed Disabled path respects Working hours
+    Given I chose "Disable for now" and the session has since locked once
+    When the Presence window elapses at 20:00 local time
+    Then no Work Block starts
+    When the window is still elapsed at 09:00 the next morning
+    Then a Work Block of the Default Preset starts
+
+  Scenario: The gate applies every day
+    Given the widget is idle and auto-start is on
+    When the Presence window elapses on a Saturday at 10:00 local time
+    Then a Work Block of the Default Preset starts
+
+  Scenario: Manual starts ignore the gate
+    Given the widget is idle at any hour outside Working hours
+    When I click a preset, Enable, Continue, Skip, or Delay
+    Then the action works exactly as it does inside Working hours
