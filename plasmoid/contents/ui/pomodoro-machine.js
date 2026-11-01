@@ -17,6 +17,11 @@ var CYCLE_LENGTH_DEFAULT = 4; // three normal breaks, then a large one
 var DESK_MINUTES_DEFAULT = 30; // Desk Reminder interval when the host supplies garbage
 var AUTO_START_MINUTES_DEFAULT = 5; // Presence window when the host supplies garbage
 
+// Working hours (SPEC-004): the fixed daily span during which Auto-start may
+// fire — 9:00 to 17:00 local time, every day, as minutes-of-day bounds.
+var WORKING_HOURS_START_MIN = 9 * 60;  // 540 — 9:00 local, inclusive
+var WORKING_HOURS_END_MIN = 17 * 60;   // 1020 — 17:00 local, exclusive
+
 // Canonical Built-in presets — always occupy slots 0-2 of the six-slot preset
 // storage (SPEC-002); a lost or garbled slot is re-seeded from here.
 var BUILTIN_SLOTS = [
@@ -289,9 +294,21 @@ function autoStartWindowMinutes(v) {
     return Math.min(60, Math.max(1, n));
 }
 
+// True when the epoch-ms instant lies inside Working hours (SPEC-004), judged
+// on the local wall clock of that instant: [9:00, 17:00). No host dependency
+// beyond the standard date API; no config field — the hours are constants.
+function inWorkingHours(now) {
+    var d = new Date(now);
+    var minutesOfDay = d.getHours() * 60 + d.getMinutes();
+    return minutesOfDay >= WORKING_HOURS_START_MIN && minutesOfDay < WORKING_HOURS_END_MIN;
+}
+
 // The only automatic-start path (SPEC-003): sustained Presence from idle or
-// Disabled. Timing phases and the finished-break wait are never interrupted;
-// Disabled additionally requires a screen lock to have re-armed auto-start.
+// Disabled, gated to Working hours (SPEC-004). Timing phases and the
+// finished-break wait are never interrupted; Disabled additionally requires a
+// screen lock to have re-armed auto-start. A tick rejected by any guard —
+// including the Working-hours gate — returns the state unchanged, so the open
+// Presence window survives and the first in-hours tick fires.
 function presenceTick(state, now) {
     if (state.autoStartEnabled !== true || state.locked === true)
         return state;
@@ -303,6 +320,12 @@ function presenceTick(state, now) {
     if (!isFinite(since) || since <= 0 || since > now)
         return state;
     if (now - since < autoStartWindowMinutes(state.autoStartMinutes) * MIN)
+        return state;
+    // Working hours (SPEC-004): Auto-start fires only inside 9:00-17:00 local.
+    // A rejected tick leaves the Presence window open — presence accrued
+    // outside hours keeps counting, and a block started in-hours is never
+    // clipped by the hours' end.
+    if (!inWorkingHours(now))
         return state;
     var preset = normalizePreset(state.defaultPreset || DEFAULT_PRESET);
     var effects = [];

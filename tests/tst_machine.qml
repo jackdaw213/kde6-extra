@@ -10,6 +10,26 @@ TestCase {
     readonly property real t0: 1767225600000
     readonly property int min: 60000
 
+    // Local wall-clock anchors (SPEC-004): instants are built with atLocal()
+    // from a fixed day anchor, so tests pin "9:00 local time" itself and stay
+    // timezone-independent. dayAnchor is the t0 day; satAnchor must be a
+    // Saturday (asserted in the test, not trusted).
+    readonly property date dayAnchor: new Date(1767225600000)
+    readonly property date satAnchor: new Date(2026, 0, 3)
+
+    // Epoch ms of hour:minute local wall-clock time on the anchor's day.
+    function atLocal(anchor, hour, minute) {
+        var d = new Date(anchor);
+        d.setHours(hour, minute, 0, 0);
+        return d.getTime();
+    }
+
+    // The presence tests' unlock instant: 10:00 local on the t0 day — inside
+    // Working hours (SPEC-004), so their presenceTicks exercise the Presence
+    // window, not the hours gate. (They previously unlocked at the raw UTC t0,
+    // whose local wall-clock meaning varies by host timezone.)
+    readonly property real tUnlock: atLocal(dayAnchor, 10, 0)
+
     function defaultPreset() {
         return { label: "50/10", workMin: 50, breakMin: 10 };
     }
@@ -894,14 +914,14 @@ TestCase {
     }
 
     function presenceOpened(enabled, minutes) {
-        return Machine.handle(autoState(enabled, minutes), { type: "screenUnlocked" }, t0);
+        return Machine.handle(autoState(enabled, minutes), { type: "screenUnlocked" }, tUnlock);
     }
 
     function test_presenceTick_atWindow_startsDefault_andNotifiesOnce() {
-        var st = Machine.handle(presenceOpened(true, 5), { type: "presenceTick" }, t0 + 5 * min);
+        var st = Machine.handle(presenceOpened(true, 5), { type: "presenceTick" }, tUnlock + 5 * min);
         compare(st.phase, "work");
         compare(st.preset.label, "50/10");
-        compare(st.deadline, t0 + 5 * min + 50 * min);
+        compare(st.deadline, tUnlock + 5 * min + 50 * min);
         compare(st.presenceSince, 0);
         compare(st.paused, false);
         compare(st.effects.length, 1);
@@ -912,13 +932,13 @@ TestCase {
     }
 
     function test_presenceTick_belowWindow_doesNothing() {
-        var st = Machine.handle(presenceOpened(true, 5), { type: "presenceTick" }, t0 + 5 * min - 1);
+        var st = Machine.handle(presenceOpened(true, 5), { type: "presenceTick" }, tUnlock + 5 * min - 1);
         compare(st.phase, "idle");
         compare(st.effects.length, 0);
     }
 
     function test_presenceTick_aboveWindow_starts() {
-        var st = Machine.handle(presenceOpened(true, 5), { type: "presenceTick" }, t0 + 6 * min);
+        var st = Machine.handle(presenceOpened(true, 5), { type: "presenceTick" }, tUnlock + 6 * min);
         compare(st.phase, "work");
         compare(st.preset.label, "50/10");
     }
@@ -926,17 +946,17 @@ TestCase {
     function test_presenceTick_usesDefaultPreset_andNotifiesItsLabel() {
         var st = presenceOpened(true, 5);
         st.defaultPreset = { label: "25/5", workMin: 25, breakMin: 5 };
-        st = Machine.handle(st, { type: "presenceTick" }, t0 + 5 * min);
+        st = Machine.handle(st, { type: "presenceTick" }, tUnlock + 5 * min);
         compare(st.phase, "work");
         compare(st.preset.label, "25/5");
-        compare(st.deadline, t0 + 5 * min + 25 * min);
+        compare(st.deadline, tUnlock + 5 * min + 25 * min);
         compare(st.effects[0].preset, "25/5");
     }
 
     function test_presenceTick_missingStar_fallsBackToBuiltIn50x10() {
         var st = presenceOpened(true, 5);
         st.defaultPreset = null;
-        st = Machine.handle(st, { type: "presenceTick" }, t0 + 5 * min);
+        st = Machine.handle(st, { type: "presenceTick" }, tUnlock + 5 * min);
         compare(st.phase, "work");
         compare(st.preset.label, "50/10");
         compare(st.effects[0].preset, "50/10");
@@ -945,7 +965,7 @@ TestCase {
     function test_presenceTick_hostileStar_fallsBackToBuiltIn() {
         var st = presenceOpened(true, 5);
         st.defaultPreset = { label: "x", workMin: NaN, breakMin: -3 };
-        st = Machine.handle(st, { type: "presenceTick" }, t0 + 5 * min);
+        st = Machine.handle(st, { type: "presenceTick" }, tUnlock + 5 * min);
         compare(st.preset.workMin, 50);
         compare(st.preset.breakMin, 10);
         compare(st.effects[0].preset, "50/10");
@@ -956,19 +976,19 @@ TestCase {
         // hand-edited stored label (SPEC-002 derived naming).
         var st = presenceOpened(true, 5);
         st.defaultPreset = { label: "Deep Work", workMin: 90, breakMin: 12 };
-        st = Machine.handle(st, { type: "presenceTick" }, t0 + 5 * min);
+        st = Machine.handle(st, { type: "presenceTick" }, tUnlock + 5 * min);
         compare(st.effects.length, 1);
         compare(st.effects[0].preset, "90/12");
     }
 
     function test_presenceTick_autoStartOff_neverStarts() {
-        var st = Machine.handle(presenceOpened(false, 5), { type: "presenceTick" }, t0 + 60 * min);
+        var st = Machine.handle(presenceOpened(false, 5), { type: "presenceTick" }, tUnlock + 60 * min);
         compare(st.phase, "idle");
         compare(st.effects.length, 0);
     }
 
     function test_presenceTick_withoutPresenceWindow_neverStarts() {
-        var st = Machine.handle(autoState(true, 5), { type: "presenceTick" }, t0 + 60 * min);
+        var st = Machine.handle(autoState(true, 5), { type: "presenceTick" }, tUnlock + 60 * min);
         compare(st.phase, "idle");
         compare(st.effects.length, 0);
     }
@@ -976,53 +996,53 @@ TestCase {
     function test_screenLock_resetsPresenceWindow() {
         // 3 unlocked minutes, then a lock: the window restarts on the next
         // unlock, so the old elapsed time cannot trigger a start.
-        var st = Machine.handle(presenceOpened(true, 5), { type: "screenLocked" }, t0 + 3 * min);
+        var st = Machine.handle(presenceOpened(true, 5), { type: "screenLocked" }, tUnlock + 3 * min);
         compare(st.presenceSince, 0);
-        st = Machine.handle(st, { type: "screenUnlocked" }, t0 + 4 * min);
-        st = Machine.handle(st, { type: "presenceTick" }, t0 + 7 * min);
+        st = Machine.handle(st, { type: "screenUnlocked" }, tUnlock + 4 * min);
+        st = Machine.handle(st, { type: "presenceTick" }, tUnlock + 7 * min);
         compare(st.phase, "idle");
-        st = Machine.handle(st, { type: "presenceTick" }, t0 + 9 * min);
+        st = Machine.handle(st, { type: "presenceTick" }, tUnlock + 9 * min);
         compare(st.phase, "work");
     }
 
     function test_presenceTick_disabled_requiresLockReArm() {
         var st = presenceOpened(true, 5);
-        st = Machine.handle(st, { type: "disable" }, t0 + 1 * min);
-        st = Machine.handle(st, { type: "presenceTick" }, t0 + 30 * min);
+        st = Machine.handle(st, { type: "disable" }, tUnlock + 1 * min);
+        st = Machine.handle(st, { type: "presenceTick" }, tUnlock + 30 * min);
         compare(st.phase, "disabled");
         compare(st.effects.length, 0);
         // One lock re-arms; the next unlock's window triggers a start.
-        st = Machine.handle(st, { type: "screenLocked" }, t0 + 31 * min);
+        st = Machine.handle(st, { type: "screenLocked" }, tUnlock + 31 * min);
         compare(st.autoStartArmed, true);
-        st = Machine.handle(st, { type: "screenUnlocked" }, t0 + 32 * min);
-        st = Machine.handle(st, { type: "presenceTick" }, t0 + 37 * min);
+        st = Machine.handle(st, { type: "screenUnlocked" }, tUnlock + 32 * min);
+        st = Machine.handle(st, { type: "presenceTick" }, tUnlock + 37 * min);
         compare(st.phase, "work");
         compare(st.preset.label, "50/10");
     }
 
     function test_presenceTick_neverFiresFromWorkBreakOrWait() {
         var work = presenceOpened(true, 5);
-        work = Machine.handle(work, { type: "startPreset", preset: defaultPreset() }, t0);
-        work.presenceSince = t0;
-        work = Machine.handle(work, { type: "presenceTick" }, t0 + 10 * min);
+        work = Machine.handle(work, { type: "startPreset", preset: defaultPreset() }, tUnlock);
+        work.presenceSince = tUnlock;
+        work = Machine.handle(work, { type: "presenceTick" }, tUnlock + 10 * min);
         compare(work.phase, "work");
         compare(work.effects.length, 0);
 
         var brk = presenceOpened(true, 5);
-        brk = Machine.handle(brk, { type: "startPreset", preset: defaultPreset() }, t0);
-        brk = Machine.handle(brk, { type: "tick" }, t0 + 50 * min + 1);
-        brk = Machine.handle(brk, { type: "tick" }, t0 + 50 * min + 2); // settle break effects
-        brk.presenceSince = t0;
-        brk = Machine.handle(brk, { type: "presenceTick" }, t0 + 55 * min);
+        brk = Machine.handle(brk, { type: "startPreset", preset: defaultPreset() }, tUnlock);
+        brk = Machine.handle(brk, { type: "tick" }, tUnlock + 50 * min + 1);
+        brk = Machine.handle(brk, { type: "tick" }, tUnlock + 50 * min + 2); // settle break effects
+        brk.presenceSince = tUnlock;
+        brk = Machine.handle(brk, { type: "presenceTick" }, tUnlock + 55 * min);
         compare(brk.phase, "break");
         compare(brk.effects.length, 0);
 
         var wait = presenceOpened(true, 5);
-        wait = Machine.handle(wait, { type: "startPreset", preset: defaultPreset() }, t0);
-        wait = Machine.handle(wait, { type: "tick" }, t0 + 61 * min);
-        wait = Machine.handle(wait, { type: "tick" }, t0 + 61 * min + 1); // settle wait effects
-        wait.presenceSince = t0;
-        wait = Machine.handle(wait, { type: "presenceTick" }, t0 + 70 * min);
+        wait = Machine.handle(wait, { type: "startPreset", preset: defaultPreset() }, tUnlock);
+        wait = Machine.handle(wait, { type: "tick" }, tUnlock + 61 * min);
+        wait = Machine.handle(wait, { type: "tick" }, tUnlock + 61 * min + 1); // settle wait effects
+        wait.presenceSince = tUnlock;
+        wait = Machine.handle(wait, { type: "presenceTick" }, tUnlock + 70 * min);
         compare(wait.phase, "wait");
         compare(wait.effects.length, 0);
     }
@@ -1032,15 +1052,15 @@ TestCase {
         // configured duration starts immediately (it is not restarted).
         var st = presenceOpened(false, 5);
         st.autoStartEnabled = true;
-        st = Machine.handle(st, { type: "presenceTick" }, t0 + 6 * min);
+        st = Machine.handle(st, { type: "presenceTick" }, tUnlock + 6 * min);
         compare(st.phase, "work");
     }
 
     function test_presenceTick_hostilePresenceValues_neverStart() {
-        [0, -5, NaN, Infinity, t0 + 20 * min].forEach(function (since) {
+        [0, -5, NaN, Infinity, tUnlock + 20 * min].forEach(function (since) {
             var st = autoState(true, 5);
             st.presenceSince = since;
-            st = Machine.handle(st, { type: "presenceTick" }, t0 + 10 * min);
+            st = Machine.handle(st, { type: "presenceTick" }, tUnlock + 10 * min);
             compare(st.phase, "idle", "presenceSince=" + since);
             compare(st.effects.length, 0, "presenceSince=" + since);
         });
@@ -1052,12 +1072,12 @@ TestCase {
             var minutes = pair[0];
             var expected = pair[1];
             var below = autoState(true, minutes);
-            below.presenceSince = t0;
-            below = Machine.handle(below, { type: "presenceTick" }, t0 + expected * min - 1);
+            below.presenceSince = tUnlock;
+            below = Machine.handle(below, { type: "presenceTick" }, tUnlock + expected * min - 1);
             compare(below.phase, "idle", "minutes=" + minutes);
             var at = autoState(true, minutes);
-            at.presenceSince = t0;
-            at = Machine.handle(at, { type: "presenceTick" }, t0 + expected * min);
+            at.presenceSince = tUnlock;
+            at = Machine.handle(at, { type: "presenceTick" }, tUnlock + expected * min);
             compare(at.phase, "work", "minutes=" + minutes);
         });
     }
@@ -1065,9 +1085,9 @@ TestCase {
     function test_presenceTick_withDeskDue_hidesStaleOverlay() {
         // Defensive path: a restored idle state can still carry a due prompt.
         var st = autoState(true, 5);
-        st.presenceSince = t0;
+        st.presenceSince = tUnlock;
         st.deskDue = true;
-        st = Machine.handle(st, { type: "presenceTick" }, t0 + 5 * min);
+        st = Machine.handle(st, { type: "presenceTick" }, tUnlock + 5 * min);
         compare(st.phase, "work");
         compare(st.deskDue, false);
         var types = st.effects.map(function (e) { return e.type; });
@@ -1081,10 +1101,10 @@ TestCase {
         var st = autoState(true, 5);
         st.deskEnabled = true;
         st.deskMinutes = 30;
-        st.presenceSince = t0;
-        st = Machine.handle(st, { type: "presenceTick" }, t0 + 5 * min);
+        st.presenceSince = tUnlock;
+        st = Machine.handle(st, { type: "presenceTick" }, tUnlock + 5 * min);
         compare(st.phase, "work");
-        compare(st.deskDeadline, t0 + 5 * min + 30 * min);
+        compare(st.deskDeadline, tUnlock + 5 * min + 30 * min);
     }
 
     // --- Slice 19: a Paused Work Block ignores ticks and clears on transitions ---
@@ -1241,11 +1261,11 @@ TestCase {
 
     function test_presenceUnavailable_clearsWindowAndBlocksAutoStart() {
         var st = presenceOpened(true, 5);
-        compare(st.presenceSince, t0);
-        st = Machine.handle(st, { type: "presenceUnavailable" }, t0 + 2 * min);
+        compare(st.presenceSince, tUnlock);
+        st = Machine.handle(st, { type: "presenceUnavailable" }, tUnlock + 2 * min);
         compare(st.locked, true);
         compare(st.presenceSince, 0);
-        st = Machine.handle(st, { type: "presenceTick" }, t0 + 10 * min);
+        st = Machine.handle(st, { type: "presenceTick" }, tUnlock + 10 * min);
         compare(st.phase, "idle");
         compare(st.effects.length, 0);
     }
@@ -1261,5 +1281,103 @@ TestCase {
         st = Machine.handle(st, { type: "tick" }, t0 + 62 * min);
         compare(st.phase, "wait");
         compare(st.continueEnabled, true);
+    }
+
+    // --- Slice 21: Working-hours gate for Auto-start (SPEC-004) ---
+    // Auto-start may fire only when the tick instant lies in [9:00, 17:00)
+    // local time, every day. All instants below are built with atLocal() so
+    // the contract pinned is local wall-clock time, not a host timezone.
+
+    function test_presenceTick_outsideHoursAt0800_windowStaysOpen() {
+        // The window elapsed at 08:00, outside Working hours: no start, and
+        // the Presence window stays open (time accrued keeps counting).
+        var opened = atLocal(dayAnchor, 7, 50);
+        var st = Machine.handle(autoState(true, 5), { type: "screenUnlocked" }, opened);
+        st = Machine.handle(st, { type: "presenceTick" }, atLocal(dayAnchor, 8, 0));
+        compare(st.phase, "idle");
+        compare(st.presenceSince, opened);
+        compare(st.effects.length, 0);
+    }
+
+    function test_presenceTick_0900Inclusive_firesWithPresenceAccruedOutsideHours() {
+        // Presence opened 08:55 with a 5-minute window: the window elapses
+        // exactly at 09:00 and the inclusive edge starts the block then, not
+        // at 9:05 — accrued-outside-hours time counts.
+        var fire = atLocal(dayAnchor, 9, 0);
+        var st = Machine.handle(autoState(true, 5),
+                                { type: "screenUnlocked" }, atLocal(dayAnchor, 8, 55));
+        st = Machine.handle(st, { type: "presenceTick" }, fire);
+        compare(st.phase, "work");
+        compare(st.deadline, fire + 50 * min);
+        compare(st.presenceSince, 0);
+        compare(st.effects.length, 1);
+        compare(st.effects[0].type, "notifyAutoStart");
+    }
+
+    function test_presenceTick_1700Exclusive_defersToNextMorning0900() {
+        // 17:00:00 exactly is outside the span: no start, window stays open,
+        // and the still-elapsed window fires on the first in-hours tick the
+        // next morning (the overnight deferral).
+        var opened = atLocal(dayAnchor, 16, 50);
+        var st = Machine.handle(autoState(true, 5), { type: "screenUnlocked" }, opened);
+        st = Machine.handle(st, { type: "presenceTick" }, atLocal(dayAnchor, 17, 0));
+        compare(st.phase, "idle");
+        compare(st.presenceSince, opened);
+        compare(st.effects.length, 0);
+        var nextDay = dayAnchor.getTime() + 24 * 3600 * 1000;
+        st = Machine.handle(st, { type: "presenceTick" }, atLocal(nextDay, 9, 0));
+        compare(st.phase, "work");
+        compare(st.deadline, atLocal(nextDay, 9, 0) + 50 * min);
+    }
+
+    function test_presenceTick_blockStartedBefore1700_runsFullLength() {
+        // The gate governs starts, not runs: a block fired at 16:59 keeps its
+        // full work length and is not cut short when 17:00 passes.
+        var fire = atLocal(dayAnchor, 16, 59);
+        var st = Machine.handle(autoState(true, 5),
+                                { type: "screenUnlocked" }, atLocal(dayAnchor, 16, 50));
+        st = Machine.handle(st, { type: "presenceTick" }, fire);
+        compare(st.phase, "work");
+        compare(st.deadline, fire + 50 * min);
+        st = Machine.handle(st, { type: "tick" }, atLocal(dayAnchor, 17, 30));
+        compare(st.phase, "work");
+        compare(st.deadline, fire + 50 * min);   // untouched, still running
+    }
+
+    function test_presenceTick_reArmedDisabled_outsideHoursDoesNothing_firesNextMorning() {
+        // The Disabled re-arm path is gated too: a window elapsing at 20:00
+        // starts nothing; the next morning's 09:00 tick does.
+        var st = Machine.handle(autoState(true, 5), { type: "disable" }, atLocal(dayAnchor, 8, 0));
+        st = Machine.handle(st, { type: "screenLocked" }, atLocal(dayAnchor, 19, 0));
+        compare(st.autoStartArmed, true);
+        st = Machine.handle(st, { type: "screenUnlocked" }, atLocal(dayAnchor, 19, 30));
+        st = Machine.handle(st, { type: "presenceTick" }, atLocal(dayAnchor, 20, 0));
+        compare(st.phase, "disabled");
+        compare(st.presenceSince, atLocal(dayAnchor, 19, 30));
+        compare(st.effects.length, 0);
+        var nextDay = dayAnchor.getTime() + 24 * 3600 * 1000;
+        st = Machine.handle(st, { type: "presenceTick" }, atLocal(nextDay, 9, 0));
+        compare(st.phase, "work");
+        compare(st.deadline, atLocal(nextDay, 9, 0) + 50 * min);
+    }
+
+    function test_presenceTick_saturdayMorning_fires() {
+        // The gate pins hours, not weekdays: Saturday behaves like Monday.
+        compare(satAnchor.getDay(), 6, "the chosen anchor must be a Saturday");
+        var fire = atLocal(satAnchor, 10, 0);
+        var st = Machine.handle(autoState(true, 5),
+                                { type: "screenUnlocked" }, atLocal(satAnchor, 9, 55));
+        st = Machine.handle(st, { type: "presenceTick" }, fire);
+        compare(st.phase, "work");
+        compare(st.deadline, fire + 50 * min);
+    }
+
+    function test_startPreset_outsideHours_stillEntersWork() {
+        // Manual starts are never gated: a preset clicked at 06:00 works.
+        var st = Machine.handle(freshState(),
+                                { type: "startPreset", preset: defaultPreset() },
+                                atLocal(dayAnchor, 6, 0));
+        compare(st.phase, "work");
+        compare(st.deadline, atLocal(dayAnchor, 6, 0) + 50 * min);
     }
 }
