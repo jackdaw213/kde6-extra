@@ -13,5 +13,9 @@ KDE desktop.
   snap (Plasma 6 port of emvaized's kde-snap-assist; `upstream/` keeps a
   pristine copy of the original and stays untracked). Formerly the
   `kde6-snap-assist` repo.
+- **keep-above-outline/** — KWin effect drawing an outline around every
+  window with Keep Above enabled (vendored from Powermayer/keep-above-outline,
+  GPL-3.0-or-later; amber default). Makes pinned windows identifiable at a
+  glance.
 
 Install steps live in each folder's README.
