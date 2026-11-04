@@ -172,7 +172,16 @@ function onWindowResize(window) {
     /// don't show assist if window could be fit in the group behind
     if (_root.fitWindowInGroupBehind && windowFitsInSnapGroup(window)) return;
 
-    const maxArea = Workspace.clientArea(MAXIMIZE_AREA, window.output ?? Workspace.activeOutput);
+    /// KWin 6.8 scripting exposes exactly two 2-arg/3-arg overloads (verified via
+    /// a QML probe against KWin 6.8.2):
+    ///   clientArea(ClientAreaOption, Window*)
+    ///   clientArea(ClientAreaOption, LogicalOutput*, VirtualDesktop*)
+    /// There is NO (option, LogicalOutput*) overload: passing window.output
+    /// throws "TypeError: Passing incompatible arguments to C++ functions" and
+    /// aborts snap detection. Pass the window itself — KWin resolves its
+    /// output and desktop. (Workspace.activeOutput also does not exist; the
+    /// property is Workspace.activeScreen.)
+    const maxArea = Workspace.clientArea(MAXIMIZE_AREA, window);
     _root.currentScreenWidth = maxArea.width; _root.currentScreenHeight = maxArea.height;
     _root.minDx = maxArea.x; _root.minDy = maxArea.y;
     const dx = window.x, dy = window.y;
@@ -505,7 +514,7 @@ function tileSourceWindow(direction) {
     const source = _root.assistSourceWindow;
     if (!_root.activated || !source || source.deleted) return false;
 
-    const area = Workspace.clientArea(MAXIMIZE_AREA, source.output ?? Workspace.activeOutput);
+    const area = Workspace.clientArea(MAXIMIZE_AREA, source);
     const halfW = area.width / 2, halfH = area.height / 2;
     let geom = null;
     if (direction === "left")       geom = { x: area.x, y: area.y, width: halfW, height: area.height };

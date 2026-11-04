@@ -18,7 +18,7 @@ renamed most of the scripting surface it used. Verified API mapping:
 |---|---|
 | `workspace.clients` | `Workspace.stackingOrder` |
 | `workspace.activeClient` (get/set) | `Workspace.activeWindow` (get/set) |
-| `workspace.clientArea(KWin.MaximizeArea, w)` | `Workspace.clientArea(2, w)` — the `KWin` enum object is not reachable from declarative scripts; `MaximizeArea == 2` |
+| `workspace.clientArea(KWin.MaximizeArea, w)` | `Workspace.clientArea(2, w)` — the `KWin` enum object is not reachable from declarative scripts; `MaximizeArea == 2`. Only overloads: `(option, Window*)` and `(option, LogicalOutput*, VirtualDesktop*)` — passing `window.output` throws |
 | `workspace.activeScreen` (int index) | `Workspace.activeScreen` (LogicalOutput object); window side: `client.screen` → `client.output` |
 | `client.desktop` (int) | `client.desktops` (list of VirtualDesktop objects) |
 | `client.clientStartUserMovedResized` / `clientFinishUserMovedResized` | `client.interactiveMoveResizeStarted` / `interactiveMoveResizeFinished` |

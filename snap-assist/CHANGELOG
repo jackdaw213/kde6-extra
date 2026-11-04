@@ -1,3 +1,8 @@
+2.0.1
+- Fix regression: `Workspace.clientArea` in KWin 6.8 scripting takes the window
+  itself, not its output — passing `window.output` (2.0.0) threw a TypeError on
+  every snap and the assist never showed
+
 1.6.2
 - New feature "Show desktop background" and associated blur option
 - Improved stability and performance by not attaching listeners to special windows (alerts, notifications, etc)
