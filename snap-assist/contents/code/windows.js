@@ -172,7 +172,7 @@ function onWindowResize(window) {
     /// don't show assist if window could be fit in the group behind
     if (_root.fitWindowInGroupBehind && windowFitsInSnapGroup(window)) return;
 
-    const maxArea = Workspace.clientArea(MAXIMIZE_AREA, window);
+    const maxArea = Workspace.clientArea(MAXIMIZE_AREA, window.output ?? Workspace.activeOutput);
     _root.currentScreenWidth = maxArea.width; _root.currentScreenHeight = maxArea.height;
     _root.minDx = maxArea.x; _root.minDy = maxArea.y;
     const dx = window.x, dy = window.y;
@@ -505,7 +505,7 @@ function tileSourceWindow(direction) {
     const source = _root.assistSourceWindow;
     if (!_root.activated || !source || source.deleted) return false;
 
-    const area = Workspace.clientArea(MAXIMIZE_AREA, source);
+    const area = Workspace.clientArea(MAXIMIZE_AREA, source.output ?? Workspace.activeOutput);
     const halfW = area.width / 2, halfH = area.height / 2;
     let geom = null;
     if (direction === "left")       geom = { x: area.x, y: area.y, width: halfW, height: area.height };
